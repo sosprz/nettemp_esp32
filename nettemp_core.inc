@@ -83,6 +83,29 @@ struct AppSettings {
   int soilWetRaw = 1400;
   bool soilSendRaw = true;
   bool soilSendPct = true;
+  bool mqttSoilSendRaw = true;
+  bool mqttSoilSendPct = true;
+  bool hcsr04Enabled = false;
+  int hcsr04TrigPin = 4;
+  int hcsr04EchoPin = 16;
+  bool oledEnabled = true;
+  uint8_t oledTextSize = 1;
+  bool oledShowTempc = true;
+  bool oledShowTempf = false;
+  bool oledShowHum = true;
+  bool oledShowVolt = false;
+  bool oledShowBatt = true;
+  bool oledShowSoilRaw = false;
+  bool oledShowSoilPct = true;
+  bool oledShowDist = true;
+  String oledSrcTempc = "auto";
+  String oledSrcTempf = "auto";
+  String oledSrcHum = "auto";
+  String oledSrcVolt = "auto";
+  String oledSrcBatt = "auto";
+  String oledSrcSoilRaw = "auto";
+  String oledSrcSoilPct = "auto";
+  String oledSrcDist = "auto";
 
   // I2C pins (optional override; -1 uses board defaults)
   int i2cSdaPin = -1;
@@ -143,6 +166,7 @@ constexpr uint32_t SRV_BLE_BATT = 1u << 3;
 constexpr uint32_t SRV_BLE_VOLT = 1u << 4;
 constexpr uint32_t SRV_BLE_RSSI = 1u << 5;
 uint32_t g_srvBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+uint32_t g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 
 // I2C → Server (Cloud) field selection.
 // Defaults: tempc + hum + press_hpa
@@ -150,6 +174,7 @@ constexpr uint32_t SRV_I2C_TEMPC = 1u << 0;
 constexpr uint32_t SRV_I2C_HUM = 1u << 1;
 constexpr uint32_t SRV_I2C_PRESS = 1u << 2;
 uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 
 std::vector<SensorRow> g_sensors;
 bool g_activeScan = false;
@@ -187,6 +212,9 @@ uint32_t g_lastMqttLocalSentMs = 0;
 int g_soilRaw = -1;
 float g_soilPct = NAN;
 uint32_t g_soilLastSeenMs = 0;
+float g_hcsr04Cm = NAN;
+uint32_t g_hcsr04LastSeenMs = 0;
+uint32_t g_hcsr04LastReadMs = 0;
 
 float g_vbatVolts = NAN;
 int g_vbatPct = -1;
@@ -384,6 +412,10 @@ static void prefsLoad() {
   if (g_srvBleFields == 0) g_srvBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_srvI2cFields = g_prefs.getUInt("srvI2cF", g_srvI2cFields);
   if (g_srvI2cFields == 0) g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  g_mqttBleFields = g_prefs.getUInt("mqBleF", g_mqttBleFields);
+  if (g_mqttBleFields == 0) g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+  g_mqttI2cFields = g_prefs.getUInt("mqI2cF", g_mqttI2cFields);
+  if (g_mqttI2cFields == 0) g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
   bleManualDecode(g_prefs.getString("bleMan", ""));
 
   g_cfg.dsEnabled = g_prefs.getBool("dsEn", g_cfg.dsEnabled);
@@ -397,6 +429,38 @@ static void prefsLoad() {
   g_cfg.soilWetRaw = (int)g_prefs.getInt("soilWet", g_cfg.soilWetRaw);
   g_cfg.soilSendRaw = g_prefs.getBool("soilRaw", g_cfg.soilSendRaw);
   g_cfg.soilSendPct = g_prefs.getBool("soilPct", g_cfg.soilSendPct);
+  g_cfg.mqttSoilSendRaw = g_prefs.getBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
+  g_cfg.mqttSoilSendPct = g_prefs.getBool("mqSoilPct", g_cfg.mqttSoilSendPct);
+  g_cfg.hcsr04Enabled = g_prefs.getBool("hcEn", g_cfg.hcsr04Enabled);
+  g_cfg.hcsr04TrigPin = (int)g_prefs.getInt("hcTrig", g_cfg.hcsr04TrigPin);
+  g_cfg.hcsr04EchoPin = (int)g_prefs.getInt("hcEcho", g_cfg.hcsr04EchoPin);
+  g_cfg.oledEnabled = g_prefs.getBool("oledEn", g_cfg.oledEnabled);
+  g_cfg.oledTextSize = (uint8_t)g_prefs.getUChar("oledSz", g_cfg.oledTextSize);
+  if (g_cfg.oledTextSize < 1 || g_cfg.oledTextSize > 3) g_cfg.oledTextSize = 1;
+  g_cfg.oledShowTempc = g_prefs.getBool("oledTc", g_cfg.oledShowTempc);
+  g_cfg.oledShowTempf = g_prefs.getBool("oledTf", g_cfg.oledShowTempf);
+  g_cfg.oledShowHum = g_prefs.getBool("oledHum", g_cfg.oledShowHum);
+  g_cfg.oledShowVolt = g_prefs.getBool("oledVolt", g_cfg.oledShowVolt);
+  g_cfg.oledShowBatt = g_prefs.getBool("oledBatt", g_cfg.oledShowBatt);
+  g_cfg.oledShowSoilRaw = g_prefs.getBool("oledSRaw", g_cfg.oledShowSoilRaw);
+  g_cfg.oledShowSoilPct = g_prefs.getBool("oledSPct", g_cfg.oledShowSoilPct);
+  g_cfg.oledShowDist = g_prefs.getBool("oledDist", g_cfg.oledShowDist);
+  g_cfg.oledSrcTempc = g_prefs.getString("oledSrcTc", g_cfg.oledSrcTempc);
+  g_cfg.oledSrcTempf = g_prefs.getString("oledSrcTf", g_cfg.oledSrcTempf);
+  g_cfg.oledSrcHum = g_prefs.getString("oledSrcHum", g_cfg.oledSrcHum);
+  g_cfg.oledSrcVolt = g_prefs.getString("oledSrcVolt", g_cfg.oledSrcVolt);
+  g_cfg.oledSrcBatt = g_prefs.getString("oledSrcBatt", g_cfg.oledSrcBatt);
+  g_cfg.oledSrcSoilRaw = g_prefs.getString("oledSrcSRaw", g_cfg.oledSrcSoilRaw);
+  g_cfg.oledSrcSoilPct = g_prefs.getString("oledSrcSPct", g_cfg.oledSrcSoilPct);
+  g_cfg.oledSrcDist = g_prefs.getString("oledSrcDist", g_cfg.oledSrcDist);
+  if (!g_cfg.oledSrcTempc.length()) g_cfg.oledSrcTempc = "auto";
+  if (!g_cfg.oledSrcTempf.length()) g_cfg.oledSrcTempf = "auto";
+  if (!g_cfg.oledSrcHum.length()) g_cfg.oledSrcHum = "auto";
+  if (!g_cfg.oledSrcVolt.length()) g_cfg.oledSrcVolt = "auto";
+  if (!g_cfg.oledSrcBatt.length()) g_cfg.oledSrcBatt = "auto";
+  if (!g_cfg.oledSrcSoilRaw.length()) g_cfg.oledSrcSoilRaw = "auto";
+  if (!g_cfg.oledSrcSoilPct.length()) g_cfg.oledSrcSoilPct = "auto";
+  if (!g_cfg.oledSrcDist.length()) g_cfg.oledSrcDist = "auto";
   if (g_cfg.dhtType != 11 && g_cfg.dhtType != 22) g_cfg.dhtType = 22;
 
   g_cfg.i2cSdaPin = (int)g_prefs.getInt("i2cSda", g_cfg.i2cSdaPin);
@@ -537,6 +601,8 @@ static void prefsSave() {
   g_prefs.putBool("gpioWh", g_cfg.gpioSendWebhook);
   g_prefs.putUInt("srvBleF", g_srvBleFields);
   g_prefs.putUInt("srvI2cF", g_srvI2cFields);
+  g_prefs.putUInt("mqBleF", g_mqttBleFields);
+  g_prefs.putUInt("mqI2cF", g_mqttI2cFields);
   g_prefs.putString("bleMan", bleManualEncode());
 
   g_prefs.putBool("dsEn", g_cfg.dsEnabled);
@@ -550,6 +616,29 @@ static void prefsSave() {
   g_prefs.putInt("soilWet", g_cfg.soilWetRaw);
   g_prefs.putBool("soilRaw", g_cfg.soilSendRaw);
   g_prefs.putBool("soilPct", g_cfg.soilSendPct);
+  g_prefs.putBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
+  g_prefs.putBool("mqSoilPct", g_cfg.mqttSoilSendPct);
+  g_prefs.putBool("hcEn", g_cfg.hcsr04Enabled);
+  g_prefs.putInt("hcTrig", g_cfg.hcsr04TrigPin);
+  g_prefs.putInt("hcEcho", g_cfg.hcsr04EchoPin);
+  g_prefs.putBool("oledEn", g_cfg.oledEnabled);
+  g_prefs.putUChar("oledSz", g_cfg.oledTextSize);
+  g_prefs.putBool("oledTc", g_cfg.oledShowTempc);
+  g_prefs.putBool("oledTf", g_cfg.oledShowTempf);
+  g_prefs.putBool("oledHum", g_cfg.oledShowHum);
+  g_prefs.putBool("oledVolt", g_cfg.oledShowVolt);
+  g_prefs.putBool("oledBatt", g_cfg.oledShowBatt);
+  g_prefs.putBool("oledSRaw", g_cfg.oledShowSoilRaw);
+  g_prefs.putBool("oledSPct", g_cfg.oledShowSoilPct);
+  g_prefs.putBool("oledDist", g_cfg.oledShowDist);
+  g_prefs.putString("oledSrcTc", g_cfg.oledSrcTempc);
+  g_prefs.putString("oledSrcTf", g_cfg.oledSrcTempf);
+  g_prefs.putString("oledSrcHum", g_cfg.oledSrcHum);
+  g_prefs.putString("oledSrcVolt", g_cfg.oledSrcVolt);
+  g_prefs.putString("oledSrcBatt", g_cfg.oledSrcBatt);
+  g_prefs.putString("oledSrcSRaw", g_cfg.oledSrcSoilRaw);
+  g_prefs.putString("oledSrcSPct", g_cfg.oledSrcSoilPct);
+  g_prefs.putString("oledSrcDist", g_cfg.oledSrcDist);
 
   g_prefs.putInt("i2cSda", g_cfg.i2cSdaPin);
   g_prefs.putInt("i2cScl", g_cfg.i2cSclPin);
@@ -628,6 +717,43 @@ static String macShort(const String& mac) {
   if (mac.length() <= 8) return mac;
   return mac.substring(mac.length() - 8);
 }
+
+static String keyTail10(const String& s) {
+  if (s.length() <= 10) return s;
+  return s.substring(s.length() - 10);
+}
+
+static String prefKeyBleName(const String& macNo) { return String("bn") + keyTail10(macNo); }
+static String prefKeyDsName(const String& romHex) { return String("dn") + keyTail10(romHex); }
+static String prefKeyI2cName(const String& addrHex) { return String("in") + addrHex; }
+
+static String prefKeyBleOledSel(const String& macNo) { return String("ob") + keyTail10(macNo); }
+static String prefKeyBleOledTempc(const String& macNo) { return String("obT") + keyTail10(macNo); }
+static String prefKeyBleOledHum(const String& macNo) { return String("obH") + keyTail10(macNo); }
+static String prefKeyBleOledVolt(const String& macNo) { return String("obV") + keyTail10(macNo); }
+static String prefKeyBleOledBatt(const String& macNo) { return String("obB") + keyTail10(macNo); }
+
+static String prefKeyI2cOledSel(const String& addrHex) { return String("oi") + addrHex; }
+static String prefKeyI2cOledTempc(const String& addrHex) { return String("oiT") + addrHex; }
+static String prefKeyI2cOledHum(const String& addrHex) { return String("oiH") + addrHex; }
+static String prefKeyI2cOledPress(const String& addrHex) { return String("oiP") + addrHex; }
+
+static String prefKeyDsOledSel(const String& romHex) { return String("od") + keyTail10(romHex); }
+static String prefKeyDsOledTempc(const String& romHex) { return String("odT") + keyTail10(romHex); }
+static String prefKeyDsOledTempf(const String& romHex) { return String("odF") + keyTail10(romHex); }
+
+constexpr const char* PREF_OLED_DHT = "odht";
+constexpr const char* PREF_OLED_DHT_T = "odhtT";
+constexpr const char* PREF_OLED_DHT_F = "odhtF";
+constexpr const char* PREF_OLED_DHT_H = "odhtH";
+constexpr const char* PREF_OLED_SOIL = "os";
+constexpr const char* PREF_OLED_SOIL_RAW = "osR";
+constexpr const char* PREF_OLED_SOIL_PCT = "osP";
+constexpr const char* PREF_OLED_HC = "oh";
+constexpr const char* PREF_OLED_HC_DIST = "ohD";
+constexpr const char* PREF_OLED_VBAT = "ov";
+constexpr const char* PREF_OLED_VBAT_V = "ovV";
+constexpr const char* PREF_OLED_VBAT_B = "ovB";
 
 static bool wifiConnected() {
   return WiFi.status() == WL_CONNECTED;

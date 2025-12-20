@@ -25,6 +25,10 @@
 #define NETTEMP_ENABLE_I2C 1
 #endif
 
+#ifndef NETTEMP_ENABLE_OLED
+#define NETTEMP_ENABLE_OLED 1
+#endif
+
 #ifndef NETTEMP_ENABLE_PORTAL
 #define NETTEMP_ENABLE_PORTAL 1
 #endif
@@ -44,10 +48,571 @@
 #if NETTEMP_ENABLE_PORTAL
 #include <Update.h>
 #endif
+#if NETTEMP_ENABLE_OLED
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#endif
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include <vector>
 #include "nettemp_core.inc"
+
+#if NETTEMP_ENABLE_OLED
+constexpr uint8_t OLED_I2C_ADDR = 0x3C;
+constexpr int OLED_WIDTH = 128;
+constexpr int OLED_HEIGHT = 64;
+static Adafruit_SSD1306 g_oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+static bool g_oledOk = false;
+static uint32_t g_oledLastUpdateMs = 0;
+static uint32_t g_oledLastSwitchMs = 0;
+static size_t g_oledEntryIndex = 0;
+static uint32_t g_oledBootMs = 0;
+
+struct OledEntry {
+  String name;
+  String lines[4];
+  int lineCount = 0;
+};
+
+static void oledEntryAddLine(OledEntry& entry, const String& line) {
+  if (entry.lineCount >= 4) return;
+  entry.lines[entry.lineCount++] = line;
+}
+
+static bool oledPickBleTempc(float& outC) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!isnan(s.temperatureC)) {
+      outC = s.temperatureC;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleHum(float& outH) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!isnan(s.humidityPct)) {
+      outH = s.humidityPct;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleVolt(float& outV) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (s.voltageMv >= 0) {
+      outV = (float)s.voltageMv / 1000.0f;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleBatt(int& outPct) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (s.batteryPct >= 0) {
+      outPct = s.batteryPct;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledMatchBleMacNo(const String& macNo, const SensorRow& s) {
+  return macNoColonsUpper(s.mac) == macNo;
+}
+
+static bool oledPickBleTempcByMac(const String& macNo, float& outC) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!oledMatchBleMacNo(macNo, s)) continue;
+    if (!isnan(s.temperatureC)) {
+      outC = s.temperatureC;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleHumByMac(const String& macNo, float& outH) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!oledMatchBleMacNo(macNo, s)) continue;
+    if (!isnan(s.humidityPct)) {
+      outH = s.humidityPct;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleVoltByMac(const String& macNo, float& outV) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!oledMatchBleMacNo(macNo, s)) continue;
+    if (s.voltageMv >= 0) {
+      outV = (float)s.voltageMv / 1000.0f;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickBleBattByMac(const String& macNo, int& outPct) {
+  const auto idx = buildBleSortedIndex();
+  for (size_t k = 0; k < idx.size(); k++) {
+    const auto& s = g_sensors[idx[k]];
+    if (!s.selected) continue;
+    if (!oledMatchBleMacNo(macNo, s)) continue;
+    if (s.batteryPct >= 0) {
+      outPct = s.batteryPct;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledParseHexByte(const String& hex, uint8_t& out) {
+  if (hex.length() == 0) return false;
+  char* end = nullptr;
+  const long v = strtol(hex.c_str(), &end, 16);
+  if (end == hex.c_str()) return false;
+  if (v < 0 || v > 255) return false;
+  out = (uint8_t)v;
+  return true;
+}
+
+static bool oledParseDsRomHex(const String& hex, std::array<uint8_t, 8>& out) {
+  if (hex.length() != 16) return false;
+  for (int i = 0; i < 8; i++) {
+    const String part = hex.substring(i * 2, i * 2 + 2);
+    uint8_t v = 0;
+    if (!oledParseHexByte(part, v)) return false;
+    out[i] = v;
+  }
+  return true;
+}
+
+static bool oledPickDsTempcByRom(const String& romHex, float& outC) {
+  std::array<uint8_t, 8> rom{};
+  if (!oledParseDsRomHex(romHex, rom)) return false;
+  for (size_t i = 0; i < g_dsRoms.size(); i++) {
+    if (g_dsRoms[i] != rom) continue;
+    if (i >= g_dsTempsC.size()) return false;
+    if (!isnan(g_dsTempsC[i])) {
+      outC = g_dsTempsC[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickI2cTempcByAddr(const String& addrHex, float& outC) {
+#if NETTEMP_ENABLE_I2C
+  uint8_t addr = 0;
+  if (!oledParseHexByte(addrHex, addr)) return false;
+  for (const auto& s : g_i2cSensors) {
+    if (!s.selected || !s.reading.ok) continue;
+    if (s.address != addr) continue;
+    if (!isnan(s.reading.temperature_c)) {
+      outC = s.reading.temperature_c;
+      return true;
+    }
+  }
+#else
+  (void)addrHex;
+  (void)outC;
+#endif
+  return false;
+}
+
+static bool oledPickI2cHumByAddr(const String& addrHex, float& outH) {
+#if NETTEMP_ENABLE_I2C
+  uint8_t addr = 0;
+  if (!oledParseHexByte(addrHex, addr)) return false;
+  for (const auto& s : g_i2cSensors) {
+    if (!s.selected || !s.reading.ok) continue;
+    if (s.address != addr) continue;
+    if (!isnan(s.reading.humidity_pct)) {
+      outH = s.reading.humidity_pct;
+      return true;
+    }
+  }
+#else
+  (void)addrHex;
+  (void)outH;
+#endif
+  return false;
+}
+
+static bool oledPickI2cTempc(float& outC) {
+#if NETTEMP_ENABLE_I2C
+  for (const auto& s : g_i2cSensors) {
+    if (!s.selected || !s.reading.ok) continue;
+    if (!isnan(s.reading.temperature_c)) {
+      outC = s.reading.temperature_c;
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
+static bool oledPickI2cHum(float& outH) {
+#if NETTEMP_ENABLE_I2C
+  for (const auto& s : g_i2cSensors) {
+    if (!s.selected || !s.reading.ok) continue;
+    if (!isnan(s.reading.humidity_pct)) {
+      outH = s.reading.humidity_pct;
+      return true;
+    }
+  }
+#endif
+  return false;
+}
+
+static bool oledPickTempc(float& outC) {
+  if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
+    outC = g_dhtTempC;
+    return true;
+  }
+  if (g_cfg.dsEnabled) {
+    for (size_t i = 0; i < g_dsTempsC.size(); i++) {
+      if (!isnan(g_dsTempsC[i])) {
+        outC = g_dsTempsC[i];
+        return true;
+      }
+    }
+  }
+  if (oledPickI2cTempc(outC)) return true;
+  return oledPickBleTempc(outC);
+}
+
+static bool oledPickHum(float& outH) {
+  if (g_cfg.dhtEnabled && !isnan(g_dhtHumPct)) {
+    outH = g_dhtHumPct;
+    return true;
+  }
+  if (oledPickI2cHum(outH)) return true;
+  return oledPickBleHum(outH);
+}
+
+static bool oledPickVolt(float& outV) {
+  if (g_cfg.vbatMode != 0 && !isnan(g_vbatVolts)) {
+    outV = g_vbatVolts;
+    return true;
+  }
+  return oledPickBleVolt(outV);
+}
+
+static bool oledPickBatt(int& outPct) {
+  if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
+    outPct = g_vbatPct;
+    return true;
+  }
+  return oledPickBleBatt(outPct);
+}
+
+static bool oledPickTempcFromSource(const String& src, float& outC) {
+  if (src.length() == 0 || src == "auto") return oledPickTempc(outC);
+  if (src == "dht") {
+    if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
+      outC = g_dhtTempC;
+      return true;
+    }
+    return false;
+  }
+  if (src.startsWith("ds:")) {
+    return oledPickDsTempcByRom(src.substring(3), outC);
+  }
+  if (src.startsWith("i2c:")) {
+    return oledPickI2cTempcByAddr(src.substring(4), outC);
+  }
+  if (src.startsWith("ble:")) {
+    return oledPickBleTempcByMac(src.substring(4), outC);
+  }
+  return false;
+}
+
+static bool oledPickHumFromSource(const String& src, float& outH) {
+  if (src.length() == 0 || src == "auto") return oledPickHum(outH);
+  if (src == "dht") {
+    if (g_cfg.dhtEnabled && !isnan(g_dhtHumPct)) {
+      outH = g_dhtHumPct;
+      return true;
+    }
+    return false;
+  }
+  if (src.startsWith("i2c:")) {
+    return oledPickI2cHumByAddr(src.substring(4), outH);
+  }
+  if (src.startsWith("ble:")) {
+    return oledPickBleHumByMac(src.substring(4), outH);
+  }
+  return false;
+}
+
+static bool oledPickVoltFromSource(const String& src, float& outV) {
+  if (src.length() == 0 || src == "auto") return oledPickVolt(outV);
+  if (src == "vbat") {
+    if (g_cfg.vbatMode != 0 && !isnan(g_vbatVolts)) {
+      outV = g_vbatVolts;
+      return true;
+    }
+    return false;
+  }
+  if (src.startsWith("ble:")) {
+    return oledPickBleVoltByMac(src.substring(4), outV);
+  }
+  return false;
+}
+
+static bool oledPickBattFromSource(const String& src, int& outPct) {
+  if (src.length() == 0 || src == "auto") return oledPickBatt(outPct);
+  if (src == "vbat") {
+    if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
+      outPct = g_vbatPct;
+      return true;
+    }
+    return false;
+  }
+  if (src.startsWith("ble:")) {
+    return oledPickBleBattByMac(src.substring(4), outPct);
+  }
+  return false;
+}
+
+static bool oledPickSoilRawFromSource(const String& src, int& outRaw) {
+  if (src.length() == 0 || src == "auto" || src == "soil") {
+    if (g_cfg.soilEnabled && g_soilRaw >= 0) {
+      outRaw = g_soilRaw;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickSoilPctFromSource(const String& src, float& outPct) {
+  if (src.length() == 0 || src == "auto" || src == "soil") {
+    if (g_cfg.soilEnabled && !isnan(g_soilPct)) {
+      outPct = g_soilPct;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool oledPickDistFromSource(const String& src, float& outCm) {
+  if (src.length() == 0 || src == "auto" || src == "hcsr04") {
+    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+      outCm = g_hcsr04Cm;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void oledInit() {
+  g_oledOk = g_oled.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDR);
+  if (!g_oledOk) return;
+  g_oledBootMs = millis();
+  g_oled.clearDisplay();
+  g_oled.setTextSize(g_cfg.oledTextSize);
+  g_oled.setTextColor(SSD1306_WHITE);
+  g_oled.setCursor(0, 0);
+  g_oled.println(g_cfg.deviceId);
+  g_oled.println("oled ready");
+  g_oled.display();
+}
+
+static void oledTick() {
+  if (!g_oledOk) return;
+  if (!g_cfg.oledEnabled) return;
+  const uint32_t nowMs = millis();
+  if (nowMs - g_oledLastUpdateMs < 2000UL) return;
+  g_oledLastUpdateMs = nowMs;
+  g_oled.setTextSize(g_cfg.oledTextSize);
+  if (g_oledBootMs != 0 && (nowMs - g_oledBootMs) < 3000UL) {
+    g_oled.clearDisplay();
+    g_oled.setCursor(0, 0);
+    g_oled.println(g_cfg.deviceId);
+    if (wifiConnected()) {
+      g_oled.print("IP: ");
+      g_oled.println(WiFi.localIP());
+    } else {
+      g_oled.println("WiFi: offline");
+    }
+    g_oled.display();
+    return;
+  }
+  if (g_oledLastSwitchMs == 0) g_oledLastSwitchMs = nowMs;
+  if (nowMs - g_oledLastSwitchMs >= 3000UL) {
+    g_oledLastSwitchMs = nowMs;
+    g_oledEntryIndex++;
+  }
+
+  std::vector<OledEntry> entries;
+  g_prefs.begin("nettemp", true);
+  auto prefBool = [&](const String& key) -> bool {
+    return g_prefs.getBool(key.c_str(), false);
+  };
+  auto prefName = [&](const String& key, const String& fallback) -> String {
+    const String v = g_prefs.getString(key.c_str(), "");
+    return v.length() ? v : fallback;
+  };
+
+  for (const auto& s : g_sensors) {
+    const String macNo = macNoColonsUpper(s.mac);
+    const String selKey = prefKeyBleOledSel(macNo);
+    if (!prefBool(selKey)) continue;
+    OledEntry entry;
+    entry.name = prefName(prefKeyBleName(macNo), String("BLE ") + macWithColonsUpper(s.mac));
+    if (prefBool(prefKeyBleOledTempc(macNo))) {
+      oledEntryAddLine(entry, "T: " + (isnan(s.temperatureC) ? String("-") : String(s.temperatureC, 1)) + "C");
+    }
+    if (prefBool(prefKeyBleOledHum(macNo))) {
+      oledEntryAddLine(entry, "H: " + (isnan(s.humidityPct) ? String("-") : String(s.humidityPct, 1)) + "%");
+    }
+    if (prefBool(prefKeyBleOledVolt(macNo))) {
+      oledEntryAddLine(entry, "V: " + (s.voltageMv < 0 ? String("-") : String((float)s.voltageMv / 1000.0f, 2)));
+    }
+    if (prefBool(prefKeyBleOledBatt(macNo))) {
+      oledEntryAddLine(entry, "B: " + (s.batteryPct < 0 ? String("-") : String(s.batteryPct)) + "%");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+
+#if NETTEMP_ENABLE_I2C
+  for (const auto& s : g_i2cSensors) {
+    String addrHex = (s.address < 16 ? String("0") : String("")) + String(s.address, HEX);
+    addrHex.toLowerCase();
+    const String selKey = prefKeyI2cOledSel(addrHex);
+    if (!prefBool(selKey)) continue;
+    OledEntry entry;
+    entry.name = prefName(prefKeyI2cName(addrHex), prefName(String("i2cname_") + addrHex, String("I2C 0x") + addrHex + " " + i2cSensorTypeName(s.type)));
+    if (prefBool(prefKeyI2cOledTempc(addrHex))) {
+      oledEntryAddLine(entry, "T: " + (isnan(s.reading.temperature_c) ? String("-") : String(s.reading.temperature_c, 1)) + "C");
+    }
+    if (prefBool(prefKeyI2cOledHum(addrHex))) {
+      oledEntryAddLine(entry, "H: " + (isnan(s.reading.humidity_pct) ? String("-") : String(s.reading.humidity_pct, 1)) + "%");
+    }
+    if (prefBool(prefKeyI2cOledPress(addrHex))) {
+      oledEntryAddLine(entry, "P: " + (isnan(s.reading.pressure_hpa) ? String("-") : String(s.reading.pressure_hpa, 1)));
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+#endif
+
+  if (prefBool(PREF_OLED_DHT)) {
+    OledEntry entry;
+    entry.name = prefName("name_dht", String("DHT") + String(g_cfg.dhtType) + " GPIO" + String(g_cfg.dhtPin));
+    if (prefBool(PREF_OLED_DHT_T)) {
+      oledEntryAddLine(entry, "T: " + (isnan(g_dhtTempC) ? String("-") : String(g_dhtTempC, 1)) + "C");
+    }
+    if (prefBool(PREF_OLED_DHT_F)) {
+      const float tempf = isnan(g_dhtTempC) ? NAN : (g_dhtTempC * 9.0f / 5.0f) + 32.0f;
+      oledEntryAddLine(entry, "Tf: " + (isnan(tempf) ? String("-") : String(tempf, 1)) + "F");
+    }
+    if (prefBool(PREF_OLED_DHT_H)) {
+      oledEntryAddLine(entry, "H: " + (isnan(g_dhtHumPct) ? String("-") : String(g_dhtHumPct, 1)) + "%");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+
+  for (size_t i = 0; i < g_dsRoms.size(); i++) {
+    char romHex[17]{};
+    for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+    const String selKey = prefKeyDsOledSel(romHex);
+    if (!prefBool(selKey)) continue;
+    OledEntry entry;
+    entry.name = prefName(prefKeyDsName(romHex), String("DS18B20 ") + romHex);
+    const float tempc = (i < g_dsTempsC.size()) ? g_dsTempsC[i] : NAN;
+    if (prefBool(prefKeyDsOledTempc(romHex))) {
+      oledEntryAddLine(entry, "T: " + (isnan(tempc) ? String("-") : String(tempc, 1)) + "C");
+    }
+    if (prefBool(prefKeyDsOledTempf(romHex))) {
+      const float tempf = isnan(tempc) ? NAN : (tempc * 9.0f / 5.0f) + 32.0f;
+      oledEntryAddLine(entry, "Tf: " + (isnan(tempf) ? String("-") : String(tempf, 1)) + "F");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+
+  if (prefBool(PREF_OLED_SOIL)) {
+    OledEntry entry;
+    entry.name = prefName("name_soil", String("SOIL ADC") + String(g_cfg.soilAdcPin));
+    if (prefBool(PREF_OLED_SOIL_RAW)) {
+      oledEntryAddLine(entry, "Raw: " + (g_soilRaw < 0 ? String("-") : String(g_soilRaw)));
+    }
+    if (prefBool(PREF_OLED_SOIL_PCT)) {
+      oledEntryAddLine(entry, "Pct: " + (isnan(g_soilPct) ? String("-") : String(g_soilPct, 1)) + "%");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+
+  if (prefBool(PREF_OLED_HC)) {
+    OledEntry entry;
+    entry.name = prefName("name_hcsr04", String("HC-SR04 GPIO") + String(g_cfg.hcsr04TrigPin) + "/" + String(g_cfg.hcsr04EchoPin));
+    if (prefBool(PREF_OLED_HC_DIST)) {
+      oledEntryAddLine(entry, "Dist: " + (isnan(g_hcsr04Cm) ? String("-") : String(g_hcsr04Cm, 1)) + "cm");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+
+  if (prefBool(PREF_OLED_VBAT)) {
+    OledEntry entry;
+    entry.name = prefName("name_vbat", "VBAT");
+    if (prefBool(PREF_OLED_VBAT_V)) {
+      oledEntryAddLine(entry, "V: " + (isnan(g_vbatVolts) ? String("-") : String(g_vbatVolts, 2)));
+    }
+    if (prefBool(PREF_OLED_VBAT_B)) {
+      oledEntryAddLine(entry, "B: " + (g_vbatPct < 0 ? String("-") : String(g_vbatPct)) + "%");
+    }
+    if (entry.lineCount == 0) oledEntryAddLine(entry, "No fields selected");
+    entries.push_back(entry);
+  }
+  g_prefs.end();
+
+  g_oled.clearDisplay();
+  g_oled.setCursor(0, 0);
+  if (entries.empty()) {
+    g_oled.println("Waiting for sensors");
+  } else {
+    if (g_oledEntryIndex >= entries.size()) g_oledEntryIndex = 0;
+    const auto& entry = entries[g_oledEntryIndex];
+    g_oled.println(entry.name);
+    for (int i = 0; i < entry.lineCount; i++) {
+      g_oled.println(entry.lines[i]);
+    }
+  }
+  g_oled.display();
+}
+#endif
 
 
 
@@ -765,6 +1330,31 @@ static void soilTick() {
   g_soilLastSeenMs = millis();
 }
 
+static void hcsr04Tick() {
+  if (!g_cfg.hcsr04Enabled) {
+    g_hcsr04Cm = NAN;
+    g_hcsr04LastSeenMs = 0;
+    return;
+  }
+  if (g_cfg.hcsr04TrigPin < 0 || g_cfg.hcsr04EchoPin < 0) return;
+  const uint32_t nowMs = millis();
+  if (g_hcsr04LastReadMs != 0 && (nowMs - g_hcsr04LastReadMs) < 1200UL) return;
+  g_hcsr04LastReadMs = nowMs;
+
+  pinMode(g_cfg.hcsr04TrigPin, OUTPUT);
+  pinMode(g_cfg.hcsr04EchoPin, INPUT);
+  digitalWrite(g_cfg.hcsr04TrigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(g_cfg.hcsr04TrigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(g_cfg.hcsr04TrigPin, LOW);
+
+  const unsigned long duration = pulseIn(g_cfg.hcsr04EchoPin, HIGH, 30000UL);
+  if (duration == 0) return;
+  g_hcsr04Cm = (float)duration / 58.0f;
+  g_hcsr04LastSeenMs = nowMs;
+}
+
 #include "nettemp_power.inc"
 
 static void blePurgeUndecoded() {
@@ -1258,27 +1848,45 @@ static void tickSendMqtt() {
   };
 
   if (g_cfg.bleSendMqtt) {
+    const String dev = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    g_prefs.begin("nettemp", true);
+    auto bleNameOr = [&](const String& macNo, const char* fallback) -> String {
+      const String name = g_prefs.getString(prefKeyBleName(macNo).c_str(), "");
+      return name.length() ? name : String(fallback);
+    };
     for (auto& s : g_sensors) {
       if (!s.selected) continue;
-      if (isnan(s.temperatureC) && isnan(s.humidityPct) && s.batteryPct < 0) continue;
+      if (isnan(s.temperatureC) && isnan(s.humidityPct) && s.batteryPct < 0 && s.voltageMv < 0 && s.rssi == 0) continue;
 
       const uint32_t now = millis();
       // Allow the first publish immediately after boot/selection (lastMqttSentMs==0).
       if (g_cfg.mqttIntervalMs > 0 && s.lastMqttSentMs != 0 && now - s.lastMqttSentMs < g_cfg.mqttIntervalMs) continue;
 
-      const String dev = macNoColonsUpper(s.mac);
-      if (!isnan(s.temperatureC)) {
-        publishNettemp(dev, dev + "_tempc", "temperature", "temperature", String(s.temperatureC, 2));
+      const String macNo = macNoColonsUpper(s.mac);
+      const String base = dev + "-ble_" + macNo;
+      if ((g_mqttBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
+        publishNettemp(dev, base + "_tempc", "temperature", bleNameOr(macNo, "temperature"), String(s.temperatureC, 2));
       }
-      if (!isnan(s.humidityPct)) {
-        publishNettemp(dev, dev + "_hum", "humidity", "humidity", String(s.humidityPct, 1));
+      if ((g_mqttBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
+        const float tempf = (s.temperatureC * 9.0f / 5.0f) + 32.0f;
+        publishNettemp(dev, base + "_tempf", "temperature_f", bleNameOr(macNo, "temperature_f"), String(tempf, 2));
       }
-      if (s.batteryPct >= 0) {
-        publishNettemp(dev, dev + "_batt", "battery", "battery", String(s.batteryPct));
+      if ((g_mqttBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
+        publishNettemp(dev, base + "_hum", "humidity", bleNameOr(macNo, "humidity"), String(s.humidityPct, 1));
+      }
+      if ((g_mqttBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
+        publishNettemp(dev, base + "_batt", "battery", bleNameOr(macNo, "battery"), String(s.batteryPct));
+      }
+      if ((g_mqttBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
+        publishNettemp(dev, base + "_volt", "voltage", bleNameOr(macNo, "volt"), String((float)s.voltageMv / 1000.0f, 3));
+      }
+      if ((g_mqttBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
+        publishNettemp(dev, base + "_rssi", "rssi", bleNameOr(macNo, "rssi"), String(s.rssi));
       }
 
       s.lastMqttSentMs = now;
     }
+    g_prefs.end();
   }
 
   // Local sensors (I2C / DS18B20 / DHT / VBAT): publish multiple messages (one per sensor_id).
@@ -1302,13 +1910,13 @@ static void tickSendMqtt() {
           const String typeName = String(i2cSensorTypeName(s.type));
           const String base = dev + "-i2c_0x" + addrHex + "_" + typeName;
 
-          if (!isnan(s.reading.temperature_c)) {
+          if ((g_mqttI2cFields & SRV_I2C_TEMPC) && !isnan(s.reading.temperature_c)) {
             publishReading(base + "_tempc", "temperature", typeName + " temp", String(s.reading.temperature_c, 2));
           }
-          if (!isnan(s.reading.humidity_pct)) {
+          if ((g_mqttI2cFields & SRV_I2C_HUM) && !isnan(s.reading.humidity_pct)) {
             publishReading(base + "_hum", "humidity", typeName + " hum", String(s.reading.humidity_pct, 1));
           }
-          if (!isnan(s.reading.pressure_hpa)) {
+          if ((g_mqttI2cFields & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
             publishReading(base + "_press_hpa", "pressure", typeName + " press", String(s.reading.pressure_hpa, 1));
           }
 
@@ -1339,10 +1947,16 @@ static void tickSendMqtt() {
 
         if (g_cfg.soilEnabled && g_soilRaw >= 0) {
           const String base = dev + "-soil_adc" + String(g_cfg.soilAdcPin);
-          publishReading(base + "_raw", "soil_raw", "soil raw", String(g_soilRaw));
-          if (!isnan(g_soilPct)) {
+          if (g_cfg.mqttSoilSendRaw) {
+            publishReading(base + "_raw", "soil_raw", "soil raw", String(g_soilRaw));
+          }
+          if (g_cfg.mqttSoilSendPct && !isnan(g_soilPct)) {
             publishReading(base + "_pct", "soil_moisture", "soil", String(g_soilPct, 1));
           }
+        }
+        if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+          const String base = dev + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
+          publishReading(base + "_cm", "distance", "distance", String(g_hcsr04Cm, 1));
         }
       }
 
@@ -1367,82 +1981,89 @@ static void tickSendServer() {
   bool anySent = false;
 
   if (g_cfg.bleSendServer) {
+    const String bleDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    g_prefs.begin("nettemp", true);
+    auto bleNameOr = [&](const String& macNo, const char* fallback) -> String {
+      const String name = g_prefs.getString(prefKeyBleName(macNo).c_str(), "");
+      return name.length() ? name : String(fallback);
+    };
     for (const auto& s : g_sensors) {
       if (!s.selected) continue;
-    const String mac = s.mac;
-    const String macNoColons = macNoColonsUpper(mac);
+      const String macNoColons = macNoColonsUpper(s.mac);
+      const String base = bleDeviceId + "-ble_" + macNoColons;
 
-    NettempBatch batch;
-    batch.deviceId = macNoColons;
-    batch.apiKey = g_cfg.serverApiKey;
-    batch.baseUrl = g_cfg.serverBaseUrl;
+      NettempBatch batch;
+      batch.deviceId = bleDeviceId;
+      batch.apiKey = g_cfg.serverApiKey;
+      batch.baseUrl = g_cfg.serverBaseUrl;
 
-    if ((g_srvBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_tempc",
-        .value = s.temperatureC,
-        .sensorType = "temperature",
-        .unit = "°C",
-        .timestamp = ts,
-        .friendlyName = "temperature",
-      });
-    }
-    if ((g_srvBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_tempf",
-        .value = (s.temperatureC * 9.0f / 5.0f) + 32.0f,
-        .sensorType = "temperature_f",
-        .unit = "",
-        .timestamp = ts,
-        .friendlyName = "temperature_f",
-      });
-    }
-    if ((g_srvBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_hum",
-        .value = s.humidityPct,
-        .sensorType = "humidity",
-        .unit = "%",
-        .timestamp = ts,
-        .friendlyName = "humidity",
-      });
-    }
-    if ((g_srvBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_batt",
-        .value = (float)s.batteryPct,
-        .sensorType = "battery",
-        .unit = "%",
-        .timestamp = ts,
-        .friendlyName = "battery",
-      });
-    }
-    if ((g_srvBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_volt",
-        .value = (float)s.voltageMv / 1000.0f,
-        .sensorType = "voltage",
-        .unit = "",
-        .timestamp = ts,
-        .friendlyName = "volt",
-      });
-    }
-    if ((g_srvBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = macNoColons + "_rssi",
-        .value = (float)s.rssi,
-        .sensorType = "rssi",
-        .unit = "dBm",
-        .timestamp = ts,
-        .friendlyName = "rssi",
-      });
-    }
+      if ((g_srvBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = s.temperatureC,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "temperature"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_tempf",
+          .value = (s.temperatureC * 9.0f / 5.0f) + 32.0f,
+          .sensorType = "temperature_f",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "temperature_f"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_hum",
+          .value = s.humidityPct,
+          .sensorType = "humidity",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "humidity"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_batt",
+          .value = (float)s.batteryPct,
+          .sensorType = "battery",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "battery"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_volt",
+          .value = (float)s.voltageMv / 1000.0f,
+          .sensorType = "voltage",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "volt"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_rssi",
+          .value = (float)s.rssi,
+          .sensorType = "rssi",
+          .unit = "dBm",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "rssi"),
+        });
+      }
 
-    if (!batch.readings.empty()) {
-      nettempPostBatch(g_tlsClient, batch);
-      anySent = true;
+      if (!batch.readings.empty()) {
+        nettempPostBatch(g_tlsClient, batch);
+        anySent = true;
+      }
     }
-    }
+    g_prefs.end();
   }
 
   if (g_cfg.i2cSendServer) {
@@ -1590,6 +2211,17 @@ static void tickSendServer() {
           .friendlyName = "soil",
         });
       }
+    }
+    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+      const String base = gpioDeviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
+      batch.readings.push_back(NettempReading{
+        .sensorId = base + "_cm",
+        .value = g_hcsr04Cm,
+        .sensorType = "distance",
+        .unit = "cm",
+        .timestamp = ts,
+        .friendlyName = "distance",
+      });
     }
 
     if (!batch.readings.empty()) {
@@ -1869,15 +2501,17 @@ static void tickSendWebhook() {
     }
     if (g_cfg.soilEnabled && g_soilRaw >= 0) {
       const String base = deviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_raw",
-        .value = (float)g_soilRaw,
-        .sensorType = "soil_raw",
-        .unit = "",
-        .timestamp = ts,
-        .friendlyName = "soil raw",
-      });
-      if (!isnan(g_soilPct)) {
+      if (g_cfg.soilSendRaw) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_raw",
+          .value = (float)g_soilRaw,
+          .sensorType = "soil_raw",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = "soil raw",
+        });
+      }
+      if (g_cfg.soilSendPct && !isnan(g_soilPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_pct",
           .value = g_soilPct,
@@ -1887,6 +2521,17 @@ static void tickSendWebhook() {
           .friendlyName = "soil",
         });
       }
+    }
+    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+      const String base = deviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
+      batch.readings.push_back(NettempReading{
+        .sensorId = base + "_cm",
+        .value = g_hcsr04Cm,
+        .sensorType = "distance",
+        .unit = "cm",
+        .timestamp = ts,
+        .friendlyName = "distance",
+      });
     }
     if (!batch.readings.empty()) {
       const String payload = buildWebhookPayload(batch);
@@ -2021,6 +2666,9 @@ void setup() {
 #endif
 
   i2cInitBus();
+#if NETTEMP_ENABLE_OLED
+  oledInit();
+#endif
 #if NETTEMP_ENABLE_I2C
   g_i2cSensors = i2cDetectKnownSensors(Wire);
   if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
@@ -2090,7 +2738,11 @@ void loop() {
   dsTick();
   dhtTick();
   soilTick();
+  hcsr04Tick();
   vbatTick();
+#if NETTEMP_ENABLE_OLED
+  oledTick();
+#endif
 
   // Sending
   tickSendMqtt();

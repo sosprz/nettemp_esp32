@@ -17,6 +17,7 @@ enum class I2cSensorType {
   BME280,
   TMP102,
   SHT3X,
+  SHT2X,
 };
 
 struct I2cSensorReading {
@@ -39,6 +40,7 @@ struct I2cSensorInfo {
 // - BMP280 at 0x76/0x77, chip_id 0x58 (reg 0xD0)
 // - TMP102 at 0x48-0x4B
 // - SHT3x at 0x44/0x45 (no chip-id; detected by successful measurement + CRC)
+// - HTU21D/SHT21/SI7021 at 0x40 (detected by successful measurement + CRC)
 std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire);
 
 // Update readings for sensors (best-effort; keeps type/address).

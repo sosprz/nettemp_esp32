@@ -67,6 +67,54 @@ bool sht3xReadTempHum(TwoWire& wire, uint8_t addr, float& outC, float& outH) {
   return true;
 }
 
+// -------------------- SHT2x / HTU21D / SI70xx --------------------
+uint8_t sht2xCrc8(const uint8_t* data, size_t len) {
+  // Polynomial 0x31, init 0x00 (Sensirion)
+  uint8_t crc = 0x00;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int b = 0; b < 8; b++) {
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+    }
+  }
+  return crc;
+}
+
+bool sht2xReadValue(TwoWire& wire, uint8_t addr, uint8_t cmd, uint16_t& raw) {
+  wire.beginTransmission(addr);
+  wire.write(cmd);
+  if (wire.endTransmission(true) != 0) return false;
+  delay(50);
+  wire.requestFrom((int)addr, 3);
+  if (wire.available() != 3) return false;
+  uint8_t b[3];
+  for (int i = 0; i < 3; i++) b[i] = (uint8_t)wire.read();
+  if (sht2xCrc8(b, 2) != b[2]) return false;
+  raw = ((uint16_t)b[0] << 8) | b[1];
+  raw &= 0xFFFC; // clear status bits
+  return true;
+}
+
+bool sht2xReadTempHum(TwoWire& wire, uint8_t addr, float& outC, float& outH) {
+  // Soft reset to avoid stuck sensors.
+  {
+    wire.beginTransmission(addr);
+    wire.write(0xFE);
+    wire.endTransmission(true);
+    delay(15);
+  }
+  uint16_t rawT = 0;
+  uint16_t rawH = 0;
+  // Use no-hold commands for better compatibility.
+  if (!sht2xReadValue(wire, addr, 0xF3, rawT)) return false; // Temp, no hold master
+  if (!sht2xReadValue(wire, addr, 0xF5, rawH)) return false; // Humidity, no hold master
+  outC = -46.85f + (175.72f * ((float)rawT / 65536.0f));
+  outH = -6.0f + (125.0f * ((float)rawH / 65536.0f));
+  if (outH < 0.0f) outH = 0.0f;
+  if (outH > 100.0f) outH = 100.0f;
+  return true;
+}
+
 // -------------------- BMP280 --------------------
 struct Bmp280Calib {
   uint16_t dig_T1;
@@ -173,6 +221,7 @@ const char* i2cSensorTypeName(I2cSensorType t) {
     case I2cSensorType::BME280: return "BME280";
     case I2cSensorType::TMP102: return "TMP102";
     case I2cSensorType::SHT3X: return "SHT3X";
+    case I2cSensorType::SHT2X: return "SHT21/HTU21D";
     default: return "UNKNOWN";
   }
 }
@@ -357,6 +406,19 @@ std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire) {
       }
     }
 
+    // SHT2x / HTU21D / SI70xx typical address
+    if (addr == 0x40) {
+      float t = NAN, h = NAN;
+      if (sht2xReadTempHum(wire, addr, t, h)) {
+        info.type = I2cSensorType::SHT2X;
+        info.reading.ok = true;
+        info.reading.temperature_c = t;
+        info.reading.humidity_pct = h;
+        found.push_back(info);
+        continue;
+      }
+    }
+
     // Unknown device; ignore for now (we only show known drivers).
   }
 
@@ -377,6 +439,13 @@ void i2cUpdateReadings(TwoWire& wire, std::vector<I2cSensorInfo>& sensors) {
     } else if (s.type == I2cSensorType::SHT3X) {
       float t = NAN, h = NAN;
       if (sht3xReadTempHum(wire, s.address, t, h)) {
+        r.ok = true;
+        r.temperature_c = t;
+        r.humidity_pct = h;
+      }
+    } else if (s.type == I2cSensorType::SHT2X) {
+      float t = NAN, h = NAN;
+      if (sht2xReadTempHum(wire, s.address, t, h)) {
         r.ok = true;
         r.temperature_c = t;
         r.humidity_pct = h;

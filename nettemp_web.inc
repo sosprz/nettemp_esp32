@@ -155,6 +155,17 @@ static void portalTick() {
 
 static void configHandleRoot() {
   if (!webRequireAuth()) return;
+  g_prefs.begin("nettemp", true);
+  auto prefGet = [&](const String& key) -> String {
+    return g_prefs.getString(key.c_str(), "");
+  };
+  auto prefGetBool = [&](const String& key) -> bool {
+    return g_prefs.getBool(key.c_str(), false);
+  };
+  auto prefGetName = [&](const String& key, const String& fallback) -> String {
+    const String v = prefGet(key);
+    return v.length() ? v : fallback;
+  };
   String body = "<!doctype html><html><head><meta charset='utf-8'/>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
                 "<title>nettemp.pl</title>"
@@ -181,10 +192,14 @@ static void configHandleRoot() {
                 "td,th{border-top:1px solid var(--border);padding:8px;font-size:14px;white-space:nowrap}"
                 "th{background:#0d1628;text-align:left;color:var(--muted)}"
                 "code{background:#0d1628;border:1px solid var(--border);padding:2px 6px;border-radius:8px;color:var(--text);word-break:break-all;white-space:normal}"
+                ".romcode{font-size:10px}"
                 "ul{margin:8px 0 0 18px;color:var(--muted)}"
                 "select{max-width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0d1628;color:var(--text)}"
                 ".grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+                ".tile-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}"
+                ".tile{background:#0d1628;border:1px solid var(--border);border-radius:12px;padding:12px;margin:0}"
                 "@media(max-width:720px){.grid2{grid-template-columns:1fr}}"
+                "@media(max-width:720px){.tile-grid{grid-template-columns:1fr}}"
                 ".hidden{display:none}"
                 "</style>"
                 "<script>"
@@ -242,7 +257,7 @@ static void configHandleRoot() {
                 "</head><body><div class='wrap'>";
 
   body += "<div class='top'><div class='logo'>nt</div><div>";
-  body += "<h2><a href='https://nettemp.pl' target='_blank' rel='noopener' style='color:inherit;text-decoration:none'>nettemp.pl</a></h2>";
+  body += "<h2><a href='https://nettemp.pl' target='_blank' rel='noopener' style='color:inherit;text-decoration:none'>nettemp</a></h2>";
   body += "<p>Device IP: <code>" + WiFi.localIP().toString() + "</code></p>";
   body += "</div></div>";
 
@@ -251,6 +266,7 @@ static void configHandleRoot() {
           "<button type='button' class='tabbtn' id='btn-tab-ble' onclick=\"showTab('tab-ble')\">BLE</button>"
           "<button type='button' class='tabbtn' id='btn-tab-i2c' onclick=\"showTab('tab-i2c')\">I2C</button>"
           "<button type='button' class='tabbtn' id='btn-tab-gpio' onclick=\"showTab('tab-gpio')\">GPIO</button>"
+          "<button type='button' class='tabbtn' id='btn-tab-oled' onclick=\"showTab('tab-oled')\">OLED</button>"
           "<button type='button' class='tabbtn' id='btn-tab-power' onclick=\"showTab('tab-power')\">Power</button>"
           "<button type='button' class='tabbtn' id='btn-tab-mqtt' onclick=\"showTab('tab-mqtt')\">MQTT</button>"
           "<button type='button' class='tabbtn' id='btn-tab-server' onclick=\"showTab('tab-server')\">Server (docker/cloud)</button>"
@@ -284,6 +300,7 @@ static void configHandleRoot() {
 #endif
     const bool showSoilRaw = g_cfg.soilEnabled;
     const bool showSoilPct = g_cfg.soilEnabled;
+    const bool showHcDist = g_cfg.hcsr04Enabled;
     body += "<h4 style='margin:8px 0 6px'>Sensors</h4>";
 
     bool anyStatusTable = false;
@@ -300,7 +317,7 @@ static void configHandleRoot() {
       }
 
       if (anyBle) {
-        body += "<div class='tablewrap'><table><tr><th>BLE</th>";
+        body += "<div class='tablewrap'><table><tr><th>Name</th><th>BLE</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
         if (showHum) body += "<th>hum</th>";
@@ -315,6 +332,9 @@ static void configHandleRoot() {
           const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0 || s.voltageMv >= 0 || s.rssi != 0;
           if (!hasValues) continue;
           body += "<tr>";
+          const String macNo = macNoColonsUpper(s.mac);
+          const String nameVal = prefGetName(prefKeyBleName(macNo), "");
+          body += "<td>" + htmlEscape(nameVal) + "</td>";
           body += "<td><code>" + macWithColonsUpper(s.mac) + "</code></td>";
           if (showTempc) body += "<td>" + (isnan(s.temperatureC) ? String("-") : String(s.temperatureC, 2)) + "</td>";
           if (showTempf) body += "<td>" + (isnan(s.temperatureC) ? String("-") : String((s.temperatureC * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
@@ -342,7 +362,7 @@ static void configHandleRoot() {
       }
 
       if (anyI2c) {
-        body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>I2C</th>";
+        body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>Name</th><th>I2C</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
         if (showHum) body += "<th>hum</th>";
@@ -358,6 +378,8 @@ static void configHandleRoot() {
           addrHex.toLowerCase();
           if (addrHex.length() == 1) addrHex = "0" + addrHex;
           body += "<tr>";
+          const String nameVal = prefGetName(prefKeyI2cName(addrHex), prefGetName(String("i2cname_") + addrHex, ""));
+          body += "<td>" + htmlEscape(nameVal) + "</td>";
           body += "<td><code>0x" + addrHex + " " + String(i2cSensorTypeName(s.type)) + "</code></td>";
           if (showTempc) body += "<td>" + (isnan(s.reading.temperature_c) ? String("-") : String(s.reading.temperature_c, 2)) + "</td>";
           if (showTempf) body += "<td>" + (isnan(s.reading.temperature_c) ? String("-") : String((s.reading.temperature_c * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
@@ -374,20 +396,10 @@ static void configHandleRoot() {
     }
 
     {
-      bool anyGpio = false;
-      if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
-        for (size_t i = 0; i < g_dsRoms.size(); i++) {
-          if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
-          anyGpio = true;
-          break;
-        }
-      }
-      if (!anyGpio && g_cfg.dhtEnabled && (!isnan(g_dhtTempC) || !isnan(g_dhtHumPct))) anyGpio = true;
-      if (!anyGpio && g_cfg.vbatMode != 0 && (g_vbatPct >= 0 || !isnan(g_vbatVolts))) anyGpio = true;
-      if (!anyGpio && g_cfg.soilEnabled && (g_soilRaw >= 0 || !isnan(g_soilPct))) anyGpio = true;
+      const bool anyGpio = g_cfg.dsEnabled || g_cfg.dhtEnabled || g_cfg.vbatMode != 0 || g_cfg.soilEnabled || g_cfg.hcsr04Enabled;
 
       if (anyGpio) {
-        body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>GPIO</th>";
+        body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>Name</th><th>GPIO</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
         if (showHum) body += "<th>hum</th>";
@@ -395,28 +407,48 @@ static void configHandleRoot() {
         if (showBatt) body += "<th>batt</th>";
         if (showSoilRaw) body += "<th>soil_raw</th>";
         if (showSoilPct) body += "<th>soil_pct</th>";
+        if (showHcDist) body += "<th>dist_cm</th>";
         body += "</tr>";
 
-        if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
-          for (size_t i = 0; i < g_dsRoms.size(); i++) {
-            if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
-            char romHex[17]{};
-            for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+        if (g_cfg.dsEnabled) {
+          if (g_dsRoms.empty()) {
             body += "<tr>";
-            body += "<td><code>DS18B20 " + String(romHex) + "</code></td>";
-            if (showTempc) body += "<td>" + String(g_dsTempsC[i], 2) + "</td>";
-            if (showTempf) body += "<td>" + String((g_dsTempsC[i] * 9.0f / 5.0f) + 32.0f, 2) + "</td>";
+            body += "<td></td>";
+            body += "<td><code>DS18B20 (no devices)</code></td>";
+            if (showTempc) body += "<td>-</td>";
+            if (showTempf) body += "<td>-</td>";
             if (showHum) body += "<td>-</td>";
             if (showVolt) body += "<td>-</td>";
             if (showBatt) body += "<td>-</td>";
             if (showSoilRaw) body += "<td>-</td>";
             if (showSoilPct) body += "<td>-</td>";
+            if (showHcDist) body += "<td>-</td>";
             body += "</tr>";
+          } else {
+            for (size_t i = 0; i < g_dsRoms.size(); i++) {
+            char romHex[17]{};
+            for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+            body += "<tr>";
+            const String nameVal = prefGetName(prefKeyDsName(romHex), "");
+            body += "<td>" + htmlEscape(nameVal) + "</td>";
+            body += "<td><code class='romcode'>DS18B20 " + String(romHex) + "</code></td>";
+            const float tempc = (i < g_dsTempsC.size()) ? g_dsTempsC[i] : NAN;
+            if (showTempc) body += "<td>" + (isnan(tempc) ? String("-") : String(tempc, 2)) + "</td>";
+            if (showTempf) body += "<td>" + (isnan(tempc) ? String("-") : String((tempc * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
+            if (showHum) body += "<td>-</td>";
+            if (showVolt) body += "<td>-</td>";
+            if (showBatt) body += "<td>-</td>";
+            if (showSoilRaw) body += "<td>-</td>";
+            if (showSoilPct) body += "<td>-</td>";
+            if (showHcDist) body += "<td>-</td>";
+            body += "</tr>";
+            }
           }
         }
 
-        if (g_cfg.dhtEnabled && (!isnan(g_dhtTempC) || !isnan(g_dhtHumPct))) {
+        if (g_cfg.dhtEnabled) {
           body += "<tr>";
+          body += "<td>" + htmlEscape(prefGetName("name_dht", "")) + "</td>";
           body += "<td><code>DHT" + String(g_cfg.dhtType) + " GPIO" + String(g_cfg.dhtPin) + "</code></td>";
           if (showTempc) body += "<td>" + (isnan(g_dhtTempC) ? String("-") : String(g_dhtTempC, 2)) + "</td>";
           if (showTempf) body += "<td>" + (isnan(g_dhtTempC) ? String("-") : String((g_dhtTempC * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
@@ -425,11 +457,13 @@ static void configHandleRoot() {
           if (showBatt) body += "<td>-</td>";
           if (showSoilRaw) body += "<td>-</td>";
           if (showSoilPct) body += "<td>-</td>";
+          if (showHcDist) body += "<td>-</td>";
           body += "</tr>";
         }
 
-        if (g_cfg.vbatMode != 0 && (g_vbatPct >= 0 || !isnan(g_vbatVolts))) {
+        if (g_cfg.vbatMode != 0) {
           body += "<tr>";
+          body += "<td>" + htmlEscape(prefGetName("name_vbat", "")) + "</td>";
           body += "<td><code>VBAT</code></td>";
           if (showTempc) body += "<td>-</td>";
           if (showTempf) body += "<td>-</td>";
@@ -438,11 +472,13 @@ static void configHandleRoot() {
           if (showBatt) body += "<td>" + (g_vbatPct < 0 ? String("-") : String(g_vbatPct)) + "</td>";
           if (showSoilRaw) body += "<td>-</td>";
           if (showSoilPct) body += "<td>-</td>";
+          if (showHcDist) body += "<td>-</td>";
           body += "</tr>";
         }
 
-        if (g_cfg.soilEnabled && (g_soilRaw >= 0 || !isnan(g_soilPct))) {
+        if (g_cfg.soilEnabled) {
           body += "<tr>";
+          body += "<td>" + htmlEscape(prefGetName("name_soil", "")) + "</td>";
           body += "<td><code>SOIL ADC" + String(g_cfg.soilAdcPin) + "</code></td>";
           if (showTempc) body += "<td>-</td>";
           if (showTempf) body += "<td>-</td>";
@@ -451,6 +487,22 @@ static void configHandleRoot() {
           if (showBatt) body += "<td>-</td>";
           if (showSoilRaw) body += "<td>" + (g_soilRaw < 0 ? String("-") : String(g_soilRaw)) + "</td>";
           if (showSoilPct) body += "<td>" + (isnan(g_soilPct) ? String("-") : String(g_soilPct, 1)) + "</td>";
+          if (showHcDist) body += "<td>-</td>";
+          body += "</tr>";
+        }
+
+        if (g_cfg.hcsr04Enabled) {
+          body += "<tr>";
+          body += "<td>" + htmlEscape(prefGetName("name_hcsr04", "")) + "</td>";
+          body += "<td><code>HC-SR04 GPIO" + String(g_cfg.hcsr04TrigPin) + "/" + String(g_cfg.hcsr04EchoPin) + "</code></td>";
+          if (showTempc) body += "<td>-</td>";
+          if (showTempf) body += "<td>-</td>";
+          if (showHum) body += "<td>-</td>";
+          if (showVolt) body += "<td>-</td>";
+          if (showBatt) body += "<td>-</td>";
+          if (showSoilRaw) body += "<td>-</td>";
+          if (showSoilPct) body += "<td>-</td>";
+          if (showHcDist) body += "<td>" + (isnan(g_hcsr04Cm) ? String("-") : String(g_hcsr04Cm, 1)) + "</td>";
           body += "</tr>";
         }
 
@@ -479,7 +531,7 @@ static void configHandleRoot() {
   body += "<h3 style='margin-top:16px'>BLE devices</h3>";
   body += "<p>Manual overrides persist across reboot (use <code>Manual</code> checkbox).</p>";
   body += "<form method='POST' action='/save_sensors'>";
-  body += "<div class='tablewrap'><table><tr><th>Send</th><th>Manual</th><th>MAC</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>batt</th></tr>";
+  body += "<div class='tablewrap'><table><tr><th>Send</th><th>Manual</th><th>MAC</th><th>Name</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>batt</th></tr>";
   const auto idx = buildBleSortedIndex();
   const uint32_t nowMs = millis();
   for (size_t k = 0; k < idx.size(); k++) {
@@ -496,7 +548,9 @@ static void configHandleRoot() {
     body += "<tr>";
     body += "<td><input type='checkbox' name='sel_" + macNo + "' value='1' " + String(selected ? "checked" : "") + "></td>";
     body += "<td><input type='checkbox' name='man_" + macNo + "' value='1' " + String(manual ? "checked" : "") + "></td>";
+    const String nameVal = prefGetName(prefKeyBleName(macNo), "");
     body += "<td><code>" + mac + "</code></td>";
+    body += "<td><input name='bleName_" + macNo + "' value='" + htmlEscape(nameVal) + "' placeholder='name'/></td>";
     body += "<td>" + String((unsigned long)ageS) + "</td>";
     body += "<td>" + (isnan(s.temperatureC) ? String("-") : String(s.temperatureC, 2)) + "</td>";
     body += "<td>" + (isnan(s.humidityPct) ? String("-") : String(s.humidityPct, 1)) + "</td>";
@@ -517,6 +571,7 @@ static void configHandleRoot() {
           "<li><code>BME280</code> (0x76/0x77)</li>"
           "<li><code>TMP102</code> (0x48-0x4B)</li>"
           "<li><code>SHT3X</code> (0x44/0x45)</li>"
+          "<li><code>HTU21D/SHT21/SI7021</code> (0x40)</li>"
           "</ul>";
 
   body += "<datalist id='i2cPins'>"
@@ -538,7 +593,7 @@ static void configHandleRoot() {
   } else {
     const uint32_t nowMs = millis();
     body += "<form method='POST' action='/save_i2c'>";
-    body += "<div class='tablewrap'><table><tr><th>Send</th><th>Type</th><th>Addr</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>press_hpa</th></tr>";
+    body += "<div class='tablewrap'><table><tr><th>Send</th><th>Type</th><th>Addr</th><th>Name</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>press_hpa</th></tr>";
     for (const auto& s : g_i2cSensors) {
       const String addrHex = (s.address < 16 ? String("0") : String("")) + String(s.address, HEX);
       const String key = "i2c_" + addrHex;
@@ -546,7 +601,9 @@ static void configHandleRoot() {
       body += "<tr>";
       body += "<td><input type='checkbox' name='" + key + "' value='1' " + String(s.selected ? "checked" : "") + "></td>";
       body += "<td><code>" + String(i2cSensorTypeName(s.type)) + "</code></td>";
+      const String nameVal = prefGetName(prefKeyI2cName(addrHex), prefGetName(String("i2cname_") + addrHex, ""));
       body += "<td><code>0x" + addrHex + "</code></td>";
+      body += "<td><input name='i2cName_" + addrHex + "' value='" + htmlEscape(nameVal) + "' placeholder='name'/></td>";
       body += "<td>" + String((unsigned long)ageS) + "</td>";
       body += "<td>" + (s.reading.ok && !isnan(s.reading.temperature_c) ? String(s.reading.temperature_c, 2) : String("-")) + "</td>";
       body += "<td>" + (s.reading.ok && !isnan(s.reading.humidity_pct) ? String(s.reading.humidity_pct, 1) : String("-")) + "</td>";
@@ -568,31 +625,174 @@ static void configHandleRoot() {
   body += "<div class='card tab hidden' id='tab-gpio'>";
   body += "<h3>GPIO sensors</h3>";
   body += "<form method='POST' action='/save_gpio'>";
+  body += "<div class='tile-grid'>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>DS18B20</h4>";
   body += "<label><input type='checkbox' name='dsEn' value='1' " + String(g_cfg.dsEnabled ? "checked" : "") + "> Enable DS18B20 (1-Wire)</label>";
   body += "<label>DS18B20 GPIO</label><input name='dsPin' value='" + String(g_cfg.dsPin) + "'/>";
   body += "<p>Detected DS18B20: <code>" + String((unsigned long)g_dsRoms.size()) + "</code></p>";
   if (!g_dsRoms.empty()) {
-    body += "<div class='tablewrap'><table><tr><th>#</th><th>ROM</th><th>tempc</th></tr>";
+    body += "<div class='tablewrap'><table><tr><th>#</th><th>ROM</th><th>Name</th><th>tempc</th></tr>";
     for (size_t i = 0; i < g_dsRoms.size(); i++) {
       char romHex[17]{};
       for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
-      body += "<tr><td>" + String((unsigned long)i) + "</td><td><code>" + String(romHex) + "</code></td><td>";
+      const String nameVal = prefGetName(prefKeyDsName(romHex), "");
+      body += "<tr><td>" + String((unsigned long)i) + "</td><td><code class='romcode'>" + String(romHex) + "</code></td>";
+      body += "<td><input name='dsName_" + String(romHex) + "' value='" + htmlEscape(nameVal) + "' placeholder='name'/></td><td>";
       body += (i < g_dsTempsC.size() && !isnan(g_dsTempsC[i]) ? String(g_dsTempsC[i], 2) : String("-"));
       body += "</td></tr>";
     }
     body += "</table></div>";
   }
-  body += "<label style='margin-top:14px'><input type='checkbox' name='dhtEn' value='1' " + String(g_cfg.dhtEnabled ? "checked" : "") + "> Enable DHT</label>";
+  body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>DHT</h4>";
+  body += "<label><input type='checkbox' name='dhtEn' value='1' " + String(g_cfg.dhtEnabled ? "checked" : "") + "> Enable DHT</label>";
+  body += "<label>Name</label><input name='name_dht' value='" + htmlEscape(prefGetName("name_dht", "")) + "' placeholder='name'/>";
   body += "<div class='grid2'><div><label>DHT GPIO</label><input name='dhtPin' value='" + String(g_cfg.dhtPin) + "'/></div>";
   body += "<div><label>DHT type</label><input name='dhtType' value='" + String(g_cfg.dhtType) + "' placeholder='11 or 22'/></div></div>";
   body += "<p>Last DHT: tempc=<code>" + (isnan(g_dhtTempC) ? String("-") : String(g_dhtTempC, 2)) + "</code> hum=<code>" +
           (isnan(g_dhtHumPct) ? String("-") : String(g_dhtHumPct, 1)) + "</code></p>";
-  body += "<label style='margin-top:14px'><input type='checkbox' name='soilEn' value='1' " + String(g_cfg.soilEnabled ? "checked" : "") + "> Enable capacitive soil moisture sensor v1.2 (ADC)</label>";
+  body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Soil</h4>";
+  body += "<label><input type='checkbox' name='soilEn' value='1' " + String(g_cfg.soilEnabled ? "checked" : "") + "> Enable capacitive soil moisture sensor v1.2 (ADC)</label>";
+  body += "<label>Name</label><input name='name_soil' value='" + htmlEscape(prefGetName("name_soil", "")) + "' placeholder='name'/>";
   body += "<label>Soil ADC pin</label><input name='soilPin' value='" + String(g_cfg.soilAdcPin) + "'/>";
   body += "<div class='grid2'><div><label>Dry raw (0%)</label><input name='soilDry' value='" + String(g_cfg.soilDryRaw) + "'/></div>";
   body += "<div><label>Wet raw (100%)</label><input name='soilWet' value='" + String(g_cfg.soilWetRaw) + "'/></div></div>";
   body += "<p>Last soil: raw=<code>" + (g_soilRaw < 0 ? String("-") : String(g_soilRaw)) + "</code> pct=<code>" +
           (isnan(g_soilPct) ? String("-") : String(g_soilPct, 1)) + "</code></p>";
+  body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>HC-SR04</h4>";
+  body += "<label><input type='checkbox' name='hcEn' value='1' " + String(g_cfg.hcsr04Enabled ? "checked" : "") + "> Enable HC-SR04 distance sensor</label>";
+  body += "<label>Name</label><input name='name_hcsr04' value='" + htmlEscape(prefGetName("name_hcsr04", "")) + "' placeholder='name'/>";
+  body += "<div class='grid2'><div><label>Trig GPIO</label><input name='hcTrig' value='" + String(g_cfg.hcsr04TrigPin) + "'/></div>";
+  body += "<div><label>Echo GPIO</label><input name='hcEcho' value='" + String(g_cfg.hcsr04EchoPin) + "'/></div></div>";
+  body += "<p>Last HC-SR04: cm=<code>" + (isnan(g_hcsr04Cm) ? String("-") : String(g_hcsr04Cm, 1)) + "</code></p>";
+  body += "</div>";
+  body += "</div>";
+  body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
+  body += "</form>";
+  body += "</div>";
+
+  body += "<div class='card tab hidden' id='tab-oled'>";
+  body += "<h3>OLED SSD1306</h3>";
+  body += "<form method='POST' action='/save_oled'>";
+  body += "<label><input type='checkbox' name='oledEn' value='1' " + String(g_cfg.oledEnabled ? "checked" : "") + "> Enable OLED output</label>";
+  body += "<label>Text size</label><select name='oledSz'>"
+          "<option value='1' " + String(g_cfg.oledTextSize == 1 ? "selected" : "") + ">Small (1)</option>"
+          "<option value='2' " + String(g_cfg.oledTextSize == 2 ? "selected" : "") + ">Medium (2)</option>"
+          "<option value='3' " + String(g_cfg.oledTextSize == 3 ? "selected" : "") + ">Large (3)</option>"
+          "</select>";
+  body += "<p class='muted'>I2C address default: <code>0x3C</code></p>";
+
+  body += "<h4 style='margin:12px 0 6px'>BLE sensors</h4>";
+  body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>hum</th><th>volt</th><th>batt</th></tr>";
+  for (const auto& s : g_sensors) {
+    const String macNo = macNoColonsUpper(s.mac);
+    const String nameVal = prefGetName(prefKeyBleName(macNo), String("BLE ") + macWithColonsUpper(s.mac));
+    const String selKey = prefKeyBleOledSel(macNo);
+    const String tcKey = prefKeyBleOledTempc(macNo);
+    const String humKey = prefKeyBleOledHum(macNo);
+    const String voltKey = prefKeyBleOledVolt(macNo);
+    const String battKey = prefKeyBleOledBatt(macNo);
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + selKey + "' value='1' " + String(prefGetBool(selKey) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td><input type='checkbox' name='" + tcKey + "' value='1' " + String(prefGetBool(tcKey) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + humKey + "' value='1' " + String(prefGetBool(humKey) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + voltKey + "' value='1' " + String(prefGetBool(voltKey) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + battKey + "' value='1' " + String(prefGetBool(battKey) ? "checked" : "") + "></td>";
+    body += "</tr>";
+  }
+  body += "</table></div>";
+
+#if NETTEMP_ENABLE_I2C
+  body += "<h4 style='margin:12px 0 6px'>I2C sensors</h4>";
+  body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>hum</th><th>press_hpa</th></tr>";
+  for (const auto& s : g_i2cSensors) {
+    const String addrHex = (s.address < 16 ? String("0") : String("")) + String(s.address, HEX);
+    const String nameVal = prefGetName(prefKeyI2cName(addrHex), prefGetName(String("i2cname_") + addrHex, String("I2C 0x") + addrHex + " " + i2cSensorTypeName(s.type)));
+    const String selKey = prefKeyI2cOledSel(addrHex);
+    const String tcKey = prefKeyI2cOledTempc(addrHex);
+    const String humKey = prefKeyI2cOledHum(addrHex);
+    const String pressKey = prefKeyI2cOledPress(addrHex);
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + selKey + "' value='1' " + String(prefGetBool(selKey) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td><input type='checkbox' name='" + tcKey + "' value='1' " + String(prefGetBool(tcKey) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + humKey + "' value='1' " + String(prefGetBool(humKey) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + pressKey + "' value='1' " + String(prefGetBool(pressKey) ? "checked" : "") + "></td>";
+    body += "</tr>";
+  }
+  body += "</table></div>";
+#endif
+
+  body += "<h4 style='margin:12px 0 6px'>GPIO sensors</h4>";
+  body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>tempf</th><th>hum</th><th>volt</th><th>batt</th><th>soil_raw</th><th>soil_pct</th><th>dist_cm</th></tr>";
+  if (g_cfg.dhtEnabled) {
+    const String nameVal = prefGetName("name_dht", String("DHT") + String(g_cfg.dhtType) + " GPIO" + String(g_cfg.dhtPin));
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_DHT) + "' value='1' " + String(prefGetBool(PREF_OLED_DHT) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_DHT_T) + "' value='1' " + String(prefGetBool(PREF_OLED_DHT_T) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_DHT_F) + "' value='1' " + String(prefGetBool(PREF_OLED_DHT_F) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_DHT_H) + "' value='1' " + String(prefGetBool(PREF_OLED_DHT_H) ? "checked" : "") + "></td>";
+    body += "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>";
+    body += "</tr>";
+  }
+  if (g_cfg.dsEnabled) {
+    for (size_t i = 0; i < g_dsRoms.size(); i++) {
+      char romHex[17]{};
+      for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+      const String nameVal = prefGetName(prefKeyDsName(romHex), String("DS18B20 ") + romHex);
+      const String selKey = prefKeyDsOledSel(romHex);
+      const String tcKey = prefKeyDsOledTempc(romHex);
+      const String tfKey = prefKeyDsOledTempf(romHex);
+      body += "<tr>";
+      body += "<td><input type='checkbox' name='" + selKey + "' value='1' " + String(prefGetBool(selKey) ? "checked" : "") + "></td>";
+      body += "<td>" + htmlEscape(nameVal) + "</td>";
+      body += "<td><input type='checkbox' name='" + tcKey + "' value='1' " + String(prefGetBool(tcKey) ? "checked" : "") + "></td>";
+      body += "<td><input type='checkbox' name='" + tfKey + "' value='1' " + String(prefGetBool(tfKey) ? "checked" : "") + "></td>";
+      body += "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>";
+      body += "</tr>";
+    }
+  }
+  if (g_cfg.soilEnabled) {
+    const String nameVal = prefGetName("name_soil", String("SOIL ADC") + String(g_cfg.soilAdcPin));
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_SOIL) + "' value='1' " + String(prefGetBool(PREF_OLED_SOIL) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_SOIL_RAW) + "' value='1' " + String(prefGetBool(PREF_OLED_SOIL_RAW) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_SOIL_PCT) + "' value='1' " + String(prefGetBool(PREF_OLED_SOIL_PCT) ? "checked" : "") + "></td>";
+    body += "<td>-</td>";
+    body += "</tr>";
+  }
+  if (g_cfg.hcsr04Enabled) {
+    const String nameVal = prefGetName("name_hcsr04", String("HC-SR04 GPIO") + String(g_cfg.hcsr04TrigPin) + "/" + String(g_cfg.hcsr04EchoPin));
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_HC) + "' value='1' " + String(prefGetBool(PREF_OLED_HC) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_HC_DIST) + "' value='1' " + String(prefGetBool(PREF_OLED_HC_DIST) ? "checked" : "") + "></td>";
+    body += "</tr>";
+  }
+  if (g_cfg.vbatMode != 0) {
+    const String nameVal = prefGetName("name_vbat", "VBAT");
+    body += "<tr>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_VBAT) + "' value='1' " + String(prefGetBool(PREF_OLED_VBAT) ? "checked" : "") + "></td>";
+    body += "<td>" + htmlEscape(nameVal) + "</td>";
+    body += "<td>-</td><td>-</td><td>-</td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_VBAT_V) + "' value='1' " + String(prefGetBool(PREF_OLED_VBAT_V) ? "checked" : "") + "></td>";
+    body += "<td><input type='checkbox' name='" + String(PREF_OLED_VBAT_B) + "' value='1' " + String(prefGetBool(PREF_OLED_VBAT_B) ? "checked" : "") + "></td>";
+    body += "<td>-</td><td>-</td><td>-</td>";
+    body += "</tr>";
+  }
+  body += "</table></div>";
+
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
   body += "</div>";
@@ -600,13 +800,19 @@ static void configHandleRoot() {
   body += "<div class='card tab hidden' id='tab-power'>";
   body += "<h3>Power</h3>";
   body += "<form method='POST' action='/save_power'>";
+  body += "<div class='tile-grid'>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Sleep</h4>";
   body += "<label><input type='checkbox' name='pwrSlp' value='1' " + String(g_cfg.powerSleepEnabled ? "checked" : "") + "> Enable deep sleep duty-cycle</label>";
   body += "<label>Boot grace (seconds; power-on/reset)</label><input name='pwrBootS' value='" + String((unsigned long)g_cfg.powerBootGraceSeconds) + "' placeholder='30 (0=never sleep on boot)'/>";
   body += "<label>Awake hold (seconds; after cycle)</label><input name='pwrHoldS' value='" + String((unsigned long)g_cfg.powerAwakeHoldSeconds) + "' placeholder='5 (0=immediate sleep)'/>";
   body += "<label>Sleep interval (seconds)</label><input name='pwrSlpS' value='" + String((unsigned long)g_cfg.powerSleepSeconds) + "'/>";
   body += "<label>BLE scan per cycle (seconds)</label><input name='pwrBleS' value='" + String((unsigned long)g_cfg.powerBleScanSeconds) + "'/>";
   body += "<label>WiFi wait per cycle (seconds)</label><input name='pwrWiS' value='" + String((unsigned long)g_cfg.powerWifiWaitSeconds) + "'/>";
-  body += "<h3 style='margin-top:16px'>Battery (VBAT)</h3>";
+  body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Battery (VBAT)</h4>";
+  body += "<label>Name</label><input name='name_vbat' value='" + htmlEscape(prefGetName("name_vbat", "")) + "' placeholder='name'/>";
   body += "<label>Mode</label><select name='vbMode'>"
           "<option value='0' " + String(g_cfg.vbatMode == 0 ? "selected" : "") + ">off</option>"
           "<option value='1' " + String(g_cfg.vbatMode == 1 ? "selected" : "") + ">adc</option>"
@@ -645,6 +851,8 @@ static void configHandleRoot() {
             "On ESP32-S3, GPIO36 does not exist; on Cardputer prefer <code>pmic</code>. "
             "If your board has a built-in divider that already scales ADC to VBAT, try <code>Divider ratio</code> = <code>1000</code>.</p>";
   }
+  body += "</div>";
+  body += "</div>";
   body += "<p style='margin-top:10px'>Note: on power-on/reset, the device stays awake for <code>boot_grace_s</code>, then performs one cycle and sleeps (unless blocked by Serial). Timer wakeups duty-cycle normally.</p>";
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
@@ -659,10 +867,26 @@ static void configHandleRoot() {
   body += "<div class='grid2'><div><label>Username</label><input name='mqttUser' value='" + htmlEscape(g_cfg.mqttUser) + "'/></div>";
   body += "<div><label>Password</label><input name='mqttPass' type='password' value='' placeholder='(leave empty to keep existing)'/></div></div>";
   body += "<label>Interval (seconds)</label><input name='mqttInt' value='" + String((unsigned long)(g_cfg.mqttIntervalMs / 1000UL)) + "'/>";
-  body += "<label style='margin-top:12px'>Sensors</label>";
+  body += "<label style='margin-top:12px'>Send readings from below devices</label>";
   body += "<label><input type='checkbox' name='mqttBle' value='1' " + String(g_cfg.bleSendMqtt ? "checked" : "") + "> BLE</label>";
   body += "<label><input type='checkbox' name='mqttGpio' value='1' " + String(g_cfg.gpioSendMqtt ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='mqttI2c' value='1' " + String(g_cfg.i2cSendMqtt ? "checked" : "") + "> I2C</label>";
+  body += "<label>MQTT JSON fields (BLE)</label>";
+  body += "<label><input type='checkbox' name='m_f_tempc' value='1' " + String((g_mqttBleFields & SRV_BLE_TEMPC) ? "checked" : "") + "> tempc</label>";
+  body += "<label><input type='checkbox' name='m_f_tempf' value='1' " + String((g_mqttBleFields & SRV_BLE_TEMPF) ? "checked" : "") + "> tempf</label>";
+  body += "<label><input type='checkbox' name='m_f_hum' value='1' " + String((g_mqttBleFields & SRV_BLE_HUM) ? "checked" : "") + "> hum</label>";
+  body += "<label><input type='checkbox' name='m_f_batt' value='1' " + String((g_mqttBleFields & SRV_BLE_BATT) ? "checked" : "") + "> batt</label>";
+  body += "<label><input type='checkbox' name='m_f_volt' value='1' " + String((g_mqttBleFields & SRV_BLE_VOLT) ? "checked" : "") + "> volt</label>";
+  body += "<label><input type='checkbox' name='m_f_rssi' value='1' " + String((g_mqttBleFields & SRV_BLE_RSSI) ? "checked" : "") + "> rssi</label>";
+#if NETTEMP_ENABLE_I2C
+  body += "<label style='margin-top:12px'>MQTT JSON fields (I2C)</label>";
+  body += "<label><input type='checkbox' name='m_f_i2c_tempc' value='1' " + String((g_mqttI2cFields & SRV_I2C_TEMPC) ? "checked" : "") + "> tempc</label>";
+  body += "<label><input type='checkbox' name='m_f_i2c_hum' value='1' " + String((g_mqttI2cFields & SRV_I2C_HUM) ? "checked" : "") + "> hum</label>";
+  body += "<label><input type='checkbox' name='m_f_i2c_press' value='1' " + String((g_mqttI2cFields & SRV_I2C_PRESS) ? "checked" : "") + "> press_hpa</label>";
+#endif
+  body += "<label style='margin-top:12px'>MQTT JSON fields (Soil)</label>";
+  body += "<label><input type='checkbox' name='m_f_soil_raw' value='1' " + String(g_cfg.mqttSoilSendRaw ? "checked" : "") + "> soil_raw</label>";
+  body += "<label><input type='checkbox' name='m_f_soil_pct' value='1' " + String(g_cfg.mqttSoilSendPct ? "checked" : "") + "> soil_pct</label>";
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
   body += "</div>";
@@ -674,7 +898,7 @@ static void configHandleRoot() {
   body += "<label>Base URL</label><input name='srvUrl' value='" + htmlEscape(g_cfg.serverBaseUrl) + "'/>";
   body += "<label>API key (ntk_...)</label><input name='srvKey' type='password' value='' placeholder='(leave empty to keep existing)'/>";
   body += "<label>Interval (seconds)</label><input name='srvInt' value='" + String((unsigned long)(g_cfg.serverIntervalMs / 1000UL)) + "'/>";
-  body += "<label style='margin-top:12px'>Sensors</label>";
+  body += "<label style='margin-top:12px'>Send readings from below devices</label>";
   body += "<label><input type='checkbox' name='srvBle' value='1' " + String(g_cfg.bleSendServer ? "checked" : "") + "> BLE</label>";
   body += "<label><input type='checkbox' name='srvGpio' value='1' " + String(g_cfg.gpioSendServer ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='srvI2c' value='1' " + String(g_cfg.i2cSendServer ? "checked" : "") + "> I2C</label>";
@@ -704,7 +928,7 @@ static void configHandleRoot() {
   body += "<label><input type='checkbox' name='whEn' value='1' " + String(g_cfg.webhookEnabled ? "checked" : "") + "> Enable webhook</label>";
   body += "<label>Webhook URL</label><input name='whUrl' value='" + htmlEscape(g_cfg.webhookUrl) + "' placeholder='https://example.com/hook'/>";
   body += "<label>Interval (seconds)</label><input name='whInt' value='" + String((unsigned long)(g_cfg.webhookIntervalMs / 1000UL)) + "'/>";
-  body += "<label style='margin-top:12px'>Sensors</label>";
+  body += "<label style='margin-top:12px'>Send readings from below devices</label>";
   body += "<label><input type='checkbox' name='whBle' value='1' " + String(g_cfg.bleSendWebhook ? "checked" : "") + "> BLE</label>";
   body += "<label><input type='checkbox' name='whGpio' value='1' " + String(g_cfg.gpioSendWebhook ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='whI2c' value='1' " + String(g_cfg.i2cSendWebhook ? "checked" : "") + "> I2C</label>";
@@ -714,11 +938,16 @@ static void configHandleRoot() {
 
   body += "<div class='card tab hidden' id='tab-device'>";
   body += "<h3>Device</h3>";
+  body += "<div class='tile-grid'>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Device ID</h4>";
   body += "<form method='POST' action='/save_device'>";
   body += "<label>Device ID (I2C/GPIO + sensor_id prefix)</label><input name='deviceId' value='" + htmlEscape(g_cfg.deviceId) + "'/>";
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
-  body += "<h3 style='margin-top:16px'>Firmware update</h3>";
+  body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Firmware update</h4>";
   const uint32_t otaFree = ESP.getFreeSketchSpace();
   const uint32_t otaMax = otaFree & 0xFFFFF000;
   body += "<form method='POST' action='/ota' enctype='multipart/form-data' onsubmit='otaOnSubmit(event)'>";
@@ -728,6 +957,8 @@ static void configHandleRoot() {
   body += "<p id='ota-status' style='color:var(--muted);margin:4px 0 0'>Idle.</p>";
   body += "<p id='ota-progress' style='color:var(--muted);margin:4px 0 0'></p>";
   body += "</form>";
+  body += "</div>";
+  body += "</div>";
   body += "</div>";
 
   body += "<div class='card tab hidden' id='tab-admin'>";
@@ -741,6 +972,9 @@ static void configHandleRoot() {
 
   body += "<div class='card tab hidden' id='tab-system'>";
   body += "<h3>System</h3>";
+  body += "<p><code>" + String(ESP.getChipModel()) + "</code> | rev <code>" + String(ESP.getChipRevision()) +
+          "</code> | cores <code>" + String(ESP.getChipCores()) + "</code> | CPU <code>" +
+          String((unsigned long)(ESP.getCpuFreqMHz())) + " MHz</code></p>";
   body += "<p>WiFi: <code>" + String(wifiConnected() ? "connected" : "not connected") + "</code>";
 #if NETTEMP_HEADLESS
   body += " | BLE autoscan: <code>" + String(g_headlessBleAutoScan ? "on" : "off") + "</code>";
@@ -748,11 +982,6 @@ static void configHandleRoot() {
   body += " | BLE scan: <code>on</code> (" + String(g_activeScan ? "active" : "passive") + ")";
 #endif
   body += "</p>";
-  body += "<p>MQTT: <code>" + String(g_cfg.mqttEnabled ? "on" : "off") + "</code> | Server: <code>" + String(g_cfg.serverEnabled ? "on" : "off") + "</code></p>";
-  body += "<p>Server JSON: <code>" + serverBleFieldsEnabledString() + "</code> (available <code>" + serverBleFieldsAvailableString() + "</code>)</p>";
-#if NETTEMP_ENABLE_I2C
-  body += "<p>Server JSON (I2C): <code>" + serverI2cFieldsEnabledString() + "</code> (available <code>" + serverI2cFieldsAvailableString() + "</code>)</p>";
-#endif
   body += "<p>Power sleep: <code>" + String(g_cfg.powerSleepEnabled ? "on" : "off") + "</code> | sleep_s <code>" + String((unsigned long)g_cfg.powerSleepSeconds) +
           "</code> | ble_scan_s <code>" + String((unsigned long)g_cfg.powerBleScanSeconds) + "</code></p>";
   {
@@ -791,18 +1020,25 @@ static void configHandleRoot() {
   body += "</div>";
 
   body += "</div></body></html>";
+  g_prefs.end();
   g_webServer.send(200, "text/html; charset=utf-8", body);
 }
 
 static void configHandleSaveSensors() {
   if (!webRequireAuth()) return;
   // Apply per-device manual overrides (or clear them).
+  g_prefs.begin("nettemp", false);
   for (const auto& s : g_sensors) {
     const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0;
     if (!hasValues) continue;
     const String macNo = macNoColonsUpper(s.mac);
     const String selKey = "sel_" + macNo;
     const String manKey = "man_" + macNo;
+    const String nameKey = "bleName_" + macNo;
+    if (g_webServer.hasArg(nameKey)) {
+      const String prefKey = prefKeyBleName(macNo);
+      g_prefs.putString(prefKey.c_str(), g_webServer.arg(nameKey));
+    }
     if (g_webServer.hasArg(manKey)) {
       const bool selected = g_webServer.hasArg(selKey);
       bleManualSet(macNo, selected);
@@ -810,6 +1046,7 @@ static void configHandleSaveSensors() {
       bleManualClear(macNo);
     }
   }
+  g_prefs.end();
   prefsSave();
   g_webServer.sendHeader("Location", "/", true);
   g_webServer.send(302, "text/plain", "");
@@ -821,13 +1058,20 @@ static void configHandleSaveI2c() {
   g_i2cSelDefined = true;
   g_i2cSelAddrs.clear();
 
+  g_prefs.begin("nettemp", false);
   for (auto& s : g_i2cSensors) {
     const String addrHex = (s.address < 16 ? String("0") : String("")) + String(s.address, HEX);
     const String key = "i2c_" + addrHex;
+    const String nameKey = "i2cName_" + addrHex;
+    if (g_webServer.hasArg(nameKey)) {
+      const String prefKey = prefKeyI2cName(addrHex);
+      g_prefs.putString(prefKey.c_str(), g_webServer.arg(nameKey));
+    }
     const bool selected = g_webServer.hasArg(key);
     s.selected = selected;
     if (selected) g_i2cSelAddrs.push_back(s.address);
   }
+  g_prefs.end();
 
   prefsSave();
   g_webServer.sendHeader("Location", "/", true);
@@ -907,9 +1151,27 @@ static void configHandleSaveMqtt() {
   g_cfg.bleSendMqtt = g_webServer.hasArg("mqttBle");
   g_cfg.gpioSendMqtt = g_webServer.hasArg("mqttGpio");
   g_cfg.i2cSendMqtt = g_webServer.hasArg("mqttI2c");
-  g_cfg.bleSendMqtt = g_webServer.hasArg("mqttBle");
-  g_cfg.gpioSendMqtt = g_webServer.hasArg("mqttGpio");
-  g_cfg.i2cSendMqtt = g_webServer.hasArg("mqttI2c");
+  g_cfg.mqttSoilSendRaw = g_webServer.hasArg("m_f_soil_raw");
+  g_cfg.mqttSoilSendPct = g_webServer.hasArg("m_f_soil_pct");
+
+  uint32_t mask = 0;
+  if (g_webServer.hasArg("m_f_tempc")) mask |= SRV_BLE_TEMPC;
+  if (g_webServer.hasArg("m_f_tempf")) mask |= SRV_BLE_TEMPF;
+  if (g_webServer.hasArg("m_f_hum")) mask |= SRV_BLE_HUM;
+  if (g_webServer.hasArg("m_f_batt")) mask |= SRV_BLE_BATT;
+  if (g_webServer.hasArg("m_f_volt")) mask |= SRV_BLE_VOLT;
+  if (g_webServer.hasArg("m_f_rssi")) mask |= SRV_BLE_RSSI;
+  if (mask == 0) mask = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+  g_mqttBleFields = mask;
+
+#if NETTEMP_ENABLE_I2C
+  uint32_t i2cMask = 0;
+  if (g_webServer.hasArg("m_f_i2c_tempc")) i2cMask |= SRV_I2C_TEMPC;
+  if (g_webServer.hasArg("m_f_i2c_hum")) i2cMask |= SRV_I2C_HUM;
+  if (g_webServer.hasArg("m_f_i2c_press")) i2cMask |= SRV_I2C_PRESS;
+  if (i2cMask == 0) i2cMask = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  g_mqttI2cFields = i2cMask;
+#endif
 
   prefsSave();
   mqttEnsureConnected();
@@ -938,8 +1200,6 @@ static void configHandleSaveServer() {
   g_cfg.bleSendWebhook = g_webServer.hasArg("whBle");
   g_cfg.gpioSendWebhook = g_webServer.hasArg("whGpio");
   g_cfg.i2cSendWebhook = g_webServer.hasArg("whI2c");
-  g_cfg.soilSendRaw = g_webServer.hasArg("f_soil_raw");
-  g_cfg.soilSendPct = g_webServer.hasArg("f_soil_pct");
   g_cfg.soilSendRaw = g_webServer.hasArg("f_soil_raw");
   g_cfg.soilSendPct = g_webServer.hasArg("f_soil_pct");
 
@@ -1039,14 +1299,97 @@ static void configHandleSaveGpio() {
   g_cfg.soilAdcPin = (int)parseU32Or(g_webServer.arg("soilPin"), (uint32_t)g_cfg.soilAdcPin);
   g_cfg.soilDryRaw = (int)parseU32Or(g_webServer.arg("soilDry"), (uint32_t)g_cfg.soilDryRaw);
   g_cfg.soilWetRaw = (int)parseU32Or(g_webServer.arg("soilWet"), (uint32_t)g_cfg.soilWetRaw);
+  g_cfg.hcsr04Enabled = g_webServer.hasArg("hcEn");
+  g_cfg.hcsr04TrigPin = (int)parseU32Or(g_webServer.arg("hcTrig"), (uint32_t)g_cfg.hcsr04TrigPin);
+  g_cfg.hcsr04EchoPin = (int)parseU32Or(g_webServer.arg("hcEcho"), (uint32_t)g_cfg.hcsr04EchoPin);
   if (g_cfg.dhtType != 11 && g_cfg.dhtType != 22) g_cfg.dhtType = 22;
   g_lastMqttLocalSentMs = 0;
   g_dhtTempC = NAN;
   g_dhtHumPct = NAN;
   g_dhtLastSeenMs = 0;
   g_dhtLastReadMs = 0;
+  g_hcsr04Cm = NAN;
+  g_hcsr04LastSeenMs = 0;
+  g_hcsr04LastReadMs = 0;
   dsEnsureBus();
   if (g_cfg.dsEnabled) dsRescan();
+
+  g_prefs.begin("nettemp", false);
+  g_prefs.putString("name_dht", g_webServer.arg("name_dht"));
+  g_prefs.putString("name_soil", g_webServer.arg("name_soil"));
+  g_prefs.putString("name_hcsr04", g_webServer.arg("name_hcsr04"));
+  for (size_t i = 0; i < g_dsRoms.size(); i++) {
+    char romHex[17]{};
+    for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+    const String key = prefKeyDsName(romHex);
+    const String argKey = String("dsName_") + romHex;
+    if (g_webServer.hasArg(argKey)) {
+      g_prefs.putString(key.c_str(), g_webServer.arg(argKey));
+    }
+  }
+  g_prefs.end();
+
+  prefsSave();
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
+static void configHandleSaveOled() {
+  if (!webRequireAuth()) return;
+
+  g_cfg.oledEnabled = g_webServer.hasArg("oledEn");
+  g_cfg.oledTextSize = (uint8_t)parseU32Or(g_webServer.arg("oledSz"), g_cfg.oledTextSize);
+  if (g_cfg.oledTextSize < 1 || g_cfg.oledTextSize > 3) g_cfg.oledTextSize = 1;
+  g_prefs.begin("nettemp", false);
+  for (const auto& s : g_sensors) {
+    const String macNo = macNoColonsUpper(s.mac);
+    const String selKey = prefKeyBleOledSel(macNo);
+    const String tcKey = prefKeyBleOledTempc(macNo);
+    const String humKey = prefKeyBleOledHum(macNo);
+    const String voltKey = prefKeyBleOledVolt(macNo);
+    const String battKey = prefKeyBleOledBatt(macNo);
+    g_prefs.putBool(selKey.c_str(), g_webServer.hasArg(selKey));
+    g_prefs.putBool(tcKey.c_str(), g_webServer.hasArg(tcKey));
+    g_prefs.putBool(humKey.c_str(), g_webServer.hasArg(humKey));
+    g_prefs.putBool(voltKey.c_str(), g_webServer.hasArg(voltKey));
+    g_prefs.putBool(battKey.c_str(), g_webServer.hasArg(battKey));
+  }
+#if NETTEMP_ENABLE_I2C
+  for (const auto& s : g_i2cSensors) {
+    const String addrHex = (s.address < 16 ? String("0") : String("")) + String(s.address, HEX);
+    const String selKey = prefKeyI2cOledSel(addrHex);
+    const String tcKey = prefKeyI2cOledTempc(addrHex);
+    const String humKey = prefKeyI2cOledHum(addrHex);
+    const String pressKey = prefKeyI2cOledPress(addrHex);
+    g_prefs.putBool(selKey.c_str(), g_webServer.hasArg(selKey));
+    g_prefs.putBool(tcKey.c_str(), g_webServer.hasArg(tcKey));
+    g_prefs.putBool(humKey.c_str(), g_webServer.hasArg(humKey));
+    g_prefs.putBool(pressKey.c_str(), g_webServer.hasArg(pressKey));
+  }
+#endif
+  g_prefs.putBool(PREF_OLED_DHT, g_webServer.hasArg(PREF_OLED_DHT));
+  g_prefs.putBool(PREF_OLED_DHT_T, g_webServer.hasArg(PREF_OLED_DHT_T));
+  g_prefs.putBool(PREF_OLED_DHT_F, g_webServer.hasArg(PREF_OLED_DHT_F));
+  g_prefs.putBool(PREF_OLED_DHT_H, g_webServer.hasArg(PREF_OLED_DHT_H));
+  for (size_t i = 0; i < g_dsRoms.size(); i++) {
+    char romHex[17]{};
+    for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+    const String selKey = prefKeyDsOledSel(romHex);
+    const String tcKey = prefKeyDsOledTempc(romHex);
+    const String tfKey = prefKeyDsOledTempf(romHex);
+    g_prefs.putBool(selKey.c_str(), g_webServer.hasArg(selKey));
+    g_prefs.putBool(tcKey.c_str(), g_webServer.hasArg(tcKey));
+    g_prefs.putBool(tfKey.c_str(), g_webServer.hasArg(tfKey));
+  }
+  g_prefs.putBool(PREF_OLED_SOIL, g_webServer.hasArg(PREF_OLED_SOIL));
+  g_prefs.putBool(PREF_OLED_SOIL_RAW, g_webServer.hasArg(PREF_OLED_SOIL_RAW));
+  g_prefs.putBool(PREF_OLED_SOIL_PCT, g_webServer.hasArg(PREF_OLED_SOIL_PCT));
+  g_prefs.putBool(PREF_OLED_HC, g_webServer.hasArg(PREF_OLED_HC));
+  g_prefs.putBool(PREF_OLED_HC_DIST, g_webServer.hasArg(PREF_OLED_HC_DIST));
+  g_prefs.putBool(PREF_OLED_VBAT, g_webServer.hasArg(PREF_OLED_VBAT));
+  g_prefs.putBool(PREF_OLED_VBAT_V, g_webServer.hasArg(PREF_OLED_VBAT_V));
+  g_prefs.putBool(PREF_OLED_VBAT_B, g_webServer.hasArg(PREF_OLED_VBAT_B));
+  g_prefs.end();
 
   prefsSave();
   g_webServer.sendHeader("Location", "/", true);
@@ -1089,6 +1432,10 @@ static void configHandleSavePower() {
   g_vbatLastSeenMs = 0;
   g_powerBootCycleDone = false;
   g_powerCycleDoneThisBoot = false;
+
+  g_prefs.begin("nettemp", false);
+  g_prefs.putString("name_vbat", g_webServer.arg("name_vbat"));
+  g_prefs.end();
 
   prefsSave();
   g_webServer.sendHeader("Location", "/", true);
@@ -1178,12 +1525,18 @@ static void configHandleSave() {
   g_cfg.soilAdcPin = (int)parseU32Or(g_webServer.arg("soilPin"), (uint32_t)g_cfg.soilAdcPin);
   g_cfg.soilDryRaw = (int)parseU32Or(g_webServer.arg("soilDry"), (uint32_t)g_cfg.soilDryRaw);
   g_cfg.soilWetRaw = (int)parseU32Or(g_webServer.arg("soilWet"), (uint32_t)g_cfg.soilWetRaw);
+  g_cfg.hcsr04Enabled = g_webServer.hasArg("hcEn");
+  g_cfg.hcsr04TrigPin = (int)parseU32Or(g_webServer.arg("hcTrig"), (uint32_t)g_cfg.hcsr04TrigPin);
+  g_cfg.hcsr04EchoPin = (int)parseU32Or(g_webServer.arg("hcEcho"), (uint32_t)g_cfg.hcsr04EchoPin);
   if (g_cfg.dhtType != 11 && g_cfg.dhtType != 22) g_cfg.dhtType = 22;
   g_lastMqttLocalSentMs = 0;
   g_dhtTempC = NAN;
   g_dhtHumPct = NAN;
   g_dhtLastSeenMs = 0;
   g_dhtLastReadMs = 0;
+  g_hcsr04Cm = NAN;
+  g_hcsr04LastSeenMs = 0;
+  g_hcsr04LastReadMs = 0;
   dsEnsureBus();
 	  if (g_cfg.dsEnabled) dsRescan();
 
@@ -1266,6 +1619,7 @@ static void configServerStart() {
   g_webServer.on("/save_server", HTTP_POST, configHandleSaveServer);
   g_webServer.on("/ota", HTTP_POST, configHandleOtaFinish, configHandleOtaUpload);
   g_webServer.on("/save_device", HTTP_POST, configHandleSaveDevice);
+  g_webServer.on("/save_oled", HTTP_POST, configHandleSaveOled);
   g_webServer.on("/save_gpio", HTTP_POST, configHandleSaveGpio);
   g_webServer.on("/save_power", HTTP_POST, configHandleSavePower);
   g_webServer.on("/save_admin", HTTP_POST, configHandleSaveAdmin);
