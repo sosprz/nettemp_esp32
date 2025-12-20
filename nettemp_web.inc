@@ -157,7 +157,7 @@ static void configHandleRoot() {
   if (!webRequireAuth()) return;
   String body = "<!doctype html><html><head><meta charset='utf-8'/>"
                 "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-                "<title>Nettemp Config</title>"
+                "<title>nettemp.pl</title>"
                 "<style>"
                 "*,*:before,*:after{box-sizing:border-box}"
                 ":root{--bg:#0b1220;--card:#111b2e;--muted:#9fb0cc;--text:#e8eefc;--accent:#2f6bff;--border:#243251}"
@@ -223,6 +223,7 @@ static void configHandleRoot() {
                 "};"
                 "xhr.onload=function(){"
                 "if(status) status.textContent=xhr.status===200?xhr.responseText:'Update failed.';"
+                "if(xhr.status===200){setTimeout(()=>window.location.reload(),2000);}"
                 "if(btn) btn.disabled=false;"
                 "};"
                 "xhr.onerror=function(){"
@@ -241,7 +242,7 @@ static void configHandleRoot() {
                 "</head><body><div class='wrap'>";
 
   body += "<div class='top'><div class='logo'>nt</div><div>";
-  body += "<h2>Nettemp Config</h2>";
+  body += "<h2><a href='https://nettemp.pl' target='_blank' rel='noopener' style='color:inherit;text-decoration:none'>nettemp.pl</a></h2>";
   body += "<p>Device IP: <code>" + WiFi.localIP().toString() + "</code></p>";
   body += "</div></div>";
 

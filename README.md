@@ -57,4 +57,3 @@ Auth: `Authorization: Bearer ntk_...`
 - `nettemp_core.inc`, `nettemp_web.inc`, `nettemp_headless.inc`, `nettemp_power.inc`
 
 ---
-Need full command list or payload examples? Check commit history or ask.
