@@ -206,6 +206,11 @@ static void configHandleRoot() {
                 "if(status) status.textContent='Select a .bin file first.';"
                 "return;"
                 "}"
+                "const maxBytes=parseInt(fileInput.dataset.max||'0',10);"
+                "if(maxBytes>0&&fileInput.files[0].size>maxBytes){"
+                "if(status) status.textContent='Partition too small for upload.';"
+                "return;"
+                "}"
                 "if(btn) btn.disabled=true;"
                 "if(status) status.textContent='Uploading firmware...';"
                 "if(progress) progress.textContent='0%';"
@@ -713,8 +718,11 @@ static void configHandleRoot() {
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
   body += "<h3 style='margin-top:16px'>Firmware update</h3>";
+  const uint32_t otaFree = ESP.getFreeSketchSpace();
+  const uint32_t otaMax = otaFree & 0xFFFFF000;
   body += "<form method='POST' action='/ota' enctype='multipart/form-data' onsubmit='otaOnSubmit(event)'>";
-  body += "<label>Upload firmware (.bin)</label><input type='file' name='firmware' accept='.bin'/>";
+  body += "<label>Upload firmware (.bin)</label><input type='file' name='firmware' id='ota-file' accept='.bin' data-max='" + String(otaMax) + "'/>";
+  body += "<p style='color:var(--muted);margin:4px 0 0'>OTA max size: <code>" + String(otaMax / 1024) + " KB</code></p>";
   body += "<p style='margin:12px 0 0'><button type='submit' id='ota-submit'>Upload & Update</button></p>";
   body += "<p id='ota-status' style='color:var(--muted);margin:4px 0 0'>Idle.</p>";
   body += "<p id='ota-progress' style='color:var(--muted);margin:4px 0 0'></p>";
@@ -969,10 +977,17 @@ static void configHandleSaveDevice() {
   g_webServer.send(302, "text/plain", "");
 }
 
+static bool g_otaFailed = false;
+static String g_otaStatus;
+
 static void configHandleOtaFinish() {
   if (!webRequireAuth()) return;
-  const bool ok = !Update.hasError();
-  g_webServer.send(ok ? 200 : 500, "text/plain", ok ? "Update OK. Rebooting..." : "Update failed.");
+  const bool ok = !Update.hasError() && !g_otaFailed;
+  String msg = ok ? "Update OK. Rebooting..." : "Update failed.";
+  if (!ok && g_otaStatus.length()) {
+    msg = g_otaStatus;
+  }
+  g_webServer.send(ok ? 200 : 500, "text/plain", msg);
   if (ok) {
     delay(300);
     ESP.restart();
@@ -983,15 +998,31 @@ static void configHandleOtaUpload() {
   if (!webRequireAuth()) return;
   HTTPUpload& upload = g_webServer.upload();
   if (upload.status == UPLOAD_FILE_START) {
-    Update.begin(UPDATE_SIZE_UNKNOWN);
+    g_otaFailed = false;
+    g_otaStatus = "";
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      g_otaFailed = true;
+      g_otaStatus = String("Update failed: ") + Update.errorString() + " (check OTA partition scheme)";
+    }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
-    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-      Update.printError(Serial);
+    if (!g_otaFailed) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+        g_otaFailed = true;
+        g_otaStatus = String("Update failed: ") + Update.errorString() + " (check OTA partition scheme)";
+      }
     }
   } else if (upload.status == UPLOAD_FILE_END) {
-    Update.end(true);
+    if (!g_otaFailed) {
+      if (!Update.end(true)) {
+        g_otaFailed = true;
+        g_otaStatus = String("Update failed: ") + Update.errorString() + " (check OTA partition scheme)";
+      }
+    }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     Update.end();
+    g_otaFailed = true;
+    g_otaStatus = "Update aborted.";
   }
 }
 
