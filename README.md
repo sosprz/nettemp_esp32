@@ -1,19 +1,23 @@
 ## Nettemp ESP32 (Cardputer): BLE thermometer viewer (Xiaomi LYWSD03MMC)
 
+Status: works OK on a single ESP32 device; **Cardputer support is still in progress**.
+
 More info: https://nettemp.pl
 
 Arduino sketch for **any ESP32** as a Nettemp client (also works great with **M5Stack Cardputer / ESP32-S3**) that:
 - scans BLE in passive/active mode and decodes **LYWSD03MMC** (ATC/PVVX advertising),
-- reads I2C sensors (**BMP280**, **BME280**, **TMP102**, optional **SHT3x**),
-- reads GPIO sensors like **DHT11/DHT22** and **DS18B20**,
+- reads I2C sensors (**BMP280**, **BME280**, **TMP102**, **SHT3x**, **SHT21/HTU21D/SI7021**),
+- reads GPIO sensors like **DHT11/DHT22**, **DS18B20**, **HC-SR04** (ultrasonic), and **capacitive soil (ADC)**,
 - supports **VBAT** reading and **deep sleep** (duty-cycle),
-- shows readings on screen (when display is available),
-- can send data to **MQTT** or **Nettemp Cloud API**,
+- shows readings on **Cardputer display** or **SSD1306 OLED**,
+- has **captive portal + web UI** (Basic Auth) for config,
+- can send data to **MQTT**, **Nettemp Cloud API**, or **Webhook (JSON)**,
+- supports **OTA firmware upload** from the web UI,
 - can show a QR to import its API token into `app.nettemp.pl`.
 
 ### Quick start (Arduino IDE)
 1. Install ESP32 boards support (Espressif).
-2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `PubSubClient` (optional), `OneWire` (optional).
+2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `PubSubClient` (optional), `OneWire` (optional).
 3. Board: **ESP32S3 Dev Module** (or Cardputer profile).
 4. Flash `nettemp_esp32.ino`.
 
@@ -36,8 +40,10 @@ In `nettemp_esp32.ino`:
 - `NETTEMP_ENABLE_SERVER` (HTTP/HTTPS to Cloud)
 - `NETTEMP_ENABLE_MQTT`
 - `NETTEMP_ENABLE_I2C`
+- `NETTEMP_ENABLE_OLED`
+- `NETTEMP_ENABLE_PORTAL` (web UI + OTA)
 
-If the sketch is too big, switch to **Huge APP (3MB No OTA)** partition scheme.
+If the sketch is too big, switch to **Huge APP (3MB No OTA)** partition scheme (note: OTA upload needs a partition scheme with OTA).
 
 ### BLE notes
 - This sketch decodes **advertising payloads** (ATC/PVVX).
