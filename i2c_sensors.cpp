@@ -425,6 +425,18 @@ std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire) {
   return found;
 }
 
+std::vector<uint8_t> i2cScanAllAddresses(TwoWire& wire) {
+  std::vector<uint8_t> found;
+
+  for (uint8_t addr = 0x03; addr <= 0x77; addr++) {
+    wire.beginTransmission(addr);
+    const uint8_t err = wire.endTransmission();
+    if (err == 0) found.push_back(addr);
+  }
+
+  return found;
+}
+
 void i2cUpdateReadings(TwoWire& wire, std::vector<I2cSensorInfo>& sensors) {
   for (auto& s : sensors) {
     I2cSensorReading r{};

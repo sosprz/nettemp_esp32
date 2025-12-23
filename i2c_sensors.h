@@ -42,6 +42,7 @@ struct I2cSensorInfo {
 // - SHT3x at 0x44/0x45 (no chip-id; detected by successful measurement + CRC)
 // - HTU21D/SHT21/SI7021 at 0x40 (detected by successful measurement + CRC)
 std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire);
+std::vector<uint8_t> i2cScanAllAddresses(TwoWire& wire);
 
 // Update readings for sensors (best-effort; keeps type/address).
 void i2cUpdateReadings(TwoWire& wire, std::vector<I2cSensorInfo>& sensors);
@@ -54,6 +55,7 @@ enum class I2cSensorType { Disabled };
 struct I2cSensorReading { bool ok = false; };
 struct I2cSensorInfo {};
 inline std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire&) { return {}; }
+inline std::vector<uint8_t> i2cScanAllAddresses(TwoWire&) { return {}; }
 inline void i2cUpdateReadings(TwoWire&, std::vector<I2cSensorInfo>&) {}
 inline const char* i2cSensorTypeName(I2cSensorType) { return "DISABLED"; }
 #endif

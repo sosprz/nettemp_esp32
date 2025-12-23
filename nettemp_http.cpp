@@ -67,20 +67,57 @@ static String buildPayload(const NettempBatch& batch) {
 } // namespace
 
 bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
-  if (!batch.baseUrl.length() || !batch.apiKey.length() || !batch.deviceId.length()) return false;
-  if (batch.readings.empty()) return true;
+  if (!batch.baseUrl.length()) {
+    Serial.println("Server send failed: baseUrl not configured");
+    return false;
+  }
+  if (!batch.apiKey.length()) {
+    Serial.println("Server send failed: apiKey not configured");
+    return false;
+  }
+  if (!batch.deviceId.length()) {
+    Serial.println("Server send failed: deviceId not configured");
+    return false;
+  }
+  if (batch.readings.empty()) {
+    Serial.println("Server send skipped: no readings to send");
+    return true;
+  }
 
   const String endpoint = joinUrl(batch.baseUrl, "/api/v1/data");
   const String body = buildPayload(batch);
 
+  Serial.printf("Sending %u reading(s) to server: %s\n", (unsigned)batch.readings.size(), endpoint.c_str());
+
+  // Auto-detect HTTP vs HTTPS
+  const bool isHttps = endpoint.startsWith("https://");
+
   HTTPClient http;
-  if (!http.begin(client, endpoint)) return false;
+  if (isHttps) {
+    // HTTPS - use secure client
+    if (!http.begin(client, endpoint)) {
+      Serial.println("Server send failed: HTTPS begin failed");
+      return false;
+    }
+  } else {
+    // HTTP - don't use secure client
+    if (!http.begin(endpoint)) {
+      Serial.println("Server send failed: HTTP begin failed");
+      return false;
+    }
+  }
 
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", String("Bearer ") + batch.apiKey);
 
   const int code = http.POST((uint8_t*)body.c_str(), body.length());
   http.end();
+
+  if (code >= 200 && code < 300) {
+    Serial.printf("Server send OK: HTTP %d\n", code);
+  } else {
+    Serial.printf("Server send failed: HTTP %d\n", code);
+  }
 
   return code >= 200 && code < 300;
 }

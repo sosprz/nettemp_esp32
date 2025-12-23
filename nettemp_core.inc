@@ -184,6 +184,7 @@ bool g_bleParseMfg = NETTEMP_BLE_PARSE_MFG;
 
 #if NETTEMP_ENABLE_I2C
 std::vector<I2cSensorInfo> g_i2cSensors;
+std::vector<uint8_t> g_i2cDetectedAddrs;
 int g_i2cCursor = 0;
 uint32_t g_lastI2cPollMs = 0;
 
@@ -202,6 +203,7 @@ std::vector<float> g_dsTempsC;
 uint32_t g_dsLastSeenMs = 0;
 uint32_t g_dsLastConvertStartMs = 0;
 bool g_dsConvertInProgress = false;
+String g_dsLastReadStatus = "";
 
 // DHT11/DHT22
 float g_dhtTempC = NAN;
@@ -725,6 +727,7 @@ static String keyTail10(const String& s) {
 
 static String prefKeyBleName(const String& macNo) { return String("bn") + keyTail10(macNo); }
 static String prefKeyDsName(const String& romHex) { return String("dn") + keyTail10(romHex); }
+static String prefKeyDsI2cName(const String& romHex) { return String("dni") + keyTail10(romHex); }
 static String prefKeyI2cName(const String& addrHex) { return String("in") + addrHex; }
 
 static String prefKeyBleOledSel(const String& macNo) { return String("ob") + keyTail10(macNo); }

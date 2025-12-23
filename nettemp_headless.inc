@@ -33,7 +33,11 @@ static void headlessPrintConfig() {
   Serial.printf("server json i2c %s (available %s)\n", serverI2cFieldsEnabledString().c_str(), serverI2cFieldsAvailableString().c_str());
   Serial.printf("i2c pins sda %d scl %d\n", g_cfg.i2cSdaPin, g_cfg.i2cSclPin);
 #endif
-  Serial.printf("ds18b20 %s pin %d count %u\n", g_cfg.dsEnabled ? "on" : "off", g_cfg.dsPin, (unsigned)g_dsRoms.size());
+  Serial.printf("ds18b20 %s mode %s pin %d count %u\n",
+                g_cfg.dsEnabled ? "on" : "off",
+                "gpio",
+                g_cfg.dsPin,
+                (unsigned)g_dsRoms.size());
   Serial.printf("dht %s type %d pin %d\n", g_cfg.dhtEnabled ? "on" : "off", g_cfg.dhtType, g_cfg.dhtPin);
   Serial.printf("power sleep %s sleep_s %lu ble_scan_s %lu wifi_wait_s %lu\n",
                 g_cfg.powerSleepEnabled ? "on" : "off",
@@ -578,6 +582,7 @@ static void headlessHandleCommand(String line) {
       g_cfg.i2cSclPin = sclStr.toInt();
       prefsSave();
       i2cInitBus();
+      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
       g_i2cSensors = i2cDetectKnownSensors(Wire);
       if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
       if (g_headlessAutoSelect) for (auto& s : g_i2cSensors) s.selected = true;
@@ -591,6 +596,7 @@ static void headlessHandleCommand(String line) {
       g_cfg.i2cSclPin = -1;
       prefsSave();
       i2cInitBus();
+      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
       g_i2cSensors = i2cDetectKnownSensors(Wire);
       if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
       if (g_headlessAutoSelect) for (auto& s : g_i2cSensors) s.selected = true;
@@ -601,6 +607,7 @@ static void headlessHandleCommand(String line) {
     }
     if (sub == "rescan") {
       i2cInitBus();
+      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
       g_i2cSensors = i2cDetectKnownSensors(Wire);
       if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
       if (g_headlessAutoSelect) {

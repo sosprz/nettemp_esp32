@@ -56,6 +56,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <vector>
+#include "ds2482.h"
 #include "nettemp_core.inc"
 
 #if NETTEMP_ENABLE_OLED
@@ -620,18 +621,31 @@ static void mqttEnsureConnected() {
 #if !NETTEMP_ENABLE_MQTT
   return;
 #else
-  if (!g_cfg.mqttEnabled) return;
-  if (!wifiConnected()) return;
+  if (!g_cfg.mqttEnabled) {
+    Serial.println("MQTT: Disabled");
+    return;
+  }
+  if (!wifiConnected()) {
+    Serial.println("MQTT: WiFi not connected");
+    return;
+  }
 
   g_mqtt.setServer(g_cfg.mqttHost.c_str(), g_cfg.mqttPort);
 
   if (g_mqtt.connected()) return;
 
+  Serial.printf("MQTT: Connecting to %s:%u...\n", g_cfg.mqttHost.c_str(), g_cfg.mqttPort);
   String clientId = "nettemp_esp32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  bool connected = false;
   if (g_cfg.mqttUser.length() || g_cfg.mqttPass.length()) {
-    g_mqtt.connect(clientId.c_str(), g_cfg.mqttUser.c_str(), g_cfg.mqttPass.c_str());
+    connected = g_mqtt.connect(clientId.c_str(), g_cfg.mqttUser.c_str(), g_cfg.mqttPass.c_str());
   } else {
-    g_mqtt.connect(clientId.c_str());
+    connected = g_mqtt.connect(clientId.c_str());
+  }
+  if (connected) {
+    Serial.println("MQTT: Connected successfully");
+  } else {
+    Serial.printf("MQTT: Connection failed, state=%d\n", g_mqtt.state());
   }
 #endif
 }
@@ -1160,18 +1174,29 @@ static void dsRescan() {
   if (!g_cfg.dsEnabled) return;
   if (!g_oneWire) return;
 
+  Serial.println("Scanning 1-Wire bus for DS18B20 sensors...");
   uint8_t addr[8]{};
   g_oneWire->reset_search();
   while (g_oneWire->search(addr)) {
-    if (OneWire::crc8(addr, 7) != addr[7]) continue;
+    if (OneWire::crc8(addr, 7) != addr[7]) {
+      Serial.println("  CRC error - invalid device");
+      continue;
+    }
     // DS18B20 family=0x28, DS1822=0x22, DS18S20=0x10
-    if (addr[0] != 0x28 && addr[0] != 0x22 && addr[0] != 0x10) continue;
+    if (addr[0] != 0x28 && addr[0] != 0x22 && addr[0] != 0x10) {
+      Serial.printf("  Skipping non-temperature device (family 0x%02X)\n", addr[0]);
+      continue;
+    }
     std::array<uint8_t, 8> rom{};
     for (int i = 0; i < 8; i++) rom[i] = addr[i];
     g_dsRoms.push_back(rom);
+    Serial.printf("  Found DS18B20: ");
+    for (int i = 0; i < 8; i++) Serial.printf("%02X", rom[i]);
+    Serial.println();
   }
 
   g_dsTempsC.assign(g_dsRoms.size(), NAN);
+  Serial.printf("1-Wire scan complete: found %u DS18B20 sensor(s)\n", (unsigned)g_dsRoms.size());
 }
 
 static void dsTick() {
@@ -1196,24 +1221,36 @@ static void dsTick() {
   if (!g_dsConvertInProgress) {
     // Start conversion at most every 2 seconds.
     if (g_dsLastConvertStartMs != 0 && (nowMs - g_dsLastConvertStartMs) < 2000UL) return;
-    if (!g_oneWire->reset()) return;
+    if (!g_oneWire->reset()) {
+      Serial.println("DS18B20: Failed to reset bus for conversion");
+      return;
+    }
     g_oneWire->skip();
     g_oneWire->write(0x44, 1); // CONVERT T (parasite power on)
     g_dsConvertInProgress = true;
     g_dsLastConvertStartMs = nowMs;
+    Serial.printf("DS18B20: Started temperature conversion for %u sensor(s)\n", (unsigned)g_dsRoms.size());
     return;
   }
 
   if ((nowMs - g_dsLastConvertStartMs) < 800UL) return;
 
   // Read all sensors (blocking but small: 9 bytes each).
+  Serial.printf("DS18B20: Reading %u sensor(s)...\n", (unsigned)g_dsRoms.size());
+  unsigned int successCount = 0;
   for (size_t i = 0; i < g_dsRoms.size(); i++) {
     uint8_t data[9]{};
-    if (!g_oneWire->reset()) continue;
+    if (!g_oneWire->reset()) {
+      Serial.printf("  [%u] Reset failed\n", (unsigned)i);
+      continue;
+    }
     g_oneWire->select(g_dsRoms[i].data());
     g_oneWire->write(0xBE); // READ SCRATCHPAD
     for (int j = 0; j < 9; j++) data[j] = g_oneWire->read();
-    if (OneWire::crc8(data, 8) != data[8]) continue;
+    if (OneWire::crc8(data, 8) != data[8]) {
+      Serial.printf("  [%u] CRC error\n", (unsigned)i);
+      continue;
+    }
 
     const int16_t raw = (int16_t)(((uint16_t)data[1] << 8) | data[0]);
     const uint8_t family = g_dsRoms[i][0];
@@ -1226,8 +1263,12 @@ static void dsTick() {
     }
     g_dsTempsC[i] = tempC;
     g_dsLastSeenMs = nowMs;
+    Serial.printf("  [%u] OK: %.2f°C (raw=0x%04X)\n", (unsigned)i, tempC, (unsigned)raw);
+    successCount++;
   }
 
+  Serial.printf("DS18B20: Read complete - %u/%u successful\n", successCount, (unsigned)g_dsRoms.size());
+  g_dsLastReadStatus = String(successCount) + "/" + String((unsigned)g_dsRoms.size()) + " OK";
   g_dsConvertInProgress = false;
 }
 
@@ -1821,16 +1862,19 @@ static void tickSendMqtt() {
 #if !NETTEMP_ENABLE_MQTT
   return;
 #else
-#if NETTEMP_HEADLESS
-  // In headless mode: publish only when background autoscan is enabled.
-  // Diagnostic scans (`ble scan`) must never publish.
-  if (!g_headlessBleAutoScan) return;
-  if (g_headlessDiagnosticsScanActive) return;
-#endif
-  if (!g_cfg.mqttEnabled) return;
-  if (!wifiConnected()) return;
+  if (!g_cfg.mqttEnabled) {
+    Serial.println("MQTT send skipped: MQTT not enabled (check Channels→MQTT→Enable MQTT checkbox)");
+    return;
+  }
+  if (!wifiConnected()) {
+    Serial.println("MQTT send skipped: WiFi not connected");
+    return;
+  }
   mqttEnsureConnected();
-  if (!g_mqtt.connected()) return;
+  if (!g_mqtt.connected()) {
+    Serial.println("MQTT send failed: not connected to broker");
+    return;
+  }
 
   auto publishNettemp = [&](const String& deviceId, const String& sensorId, const char* sensorType, const String& name,
                             const String& valueStr) {
@@ -1844,10 +1888,20 @@ static void tickSendMqtt() {
     payload += ",\"sensor_type\":\"" + String(sensorType) + "\"";
     payload += ",\"name\":\"" + name + "\"";
     payload += "}";
-    g_mqtt.publish(topic.c_str(), payload.c_str(), false);
+    const bool ok = g_mqtt.publish(topic.c_str(), payload.c_str(), false);
+    Serial.printf("MQTT publish %s: %s = %s\n", ok ? "OK" : "FAILED", topic.c_str(), valueStr.c_str());
   };
 
   if (g_cfg.bleSendMqtt) {
+#if NETTEMP_HEADLESS
+    // In headless mode: publish BLE only when background autoscan is enabled.
+    // Diagnostic scans (`ble scan`) must never publish.
+    if (!g_headlessBleAutoScan) {
+      Serial.println("MQTT BLE: Skipped (headless autoscan disabled)");
+    } else if (g_headlessDiagnosticsScanActive) {
+      Serial.println("MQTT BLE: Skipped (diagnostic scan active)");
+    } else {
+#endif
     const String dev = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
     g_prefs.begin("nettemp", true);
     auto bleNameOr = [&](const String& macNo, const char* fallback) -> String {
@@ -1887,6 +1941,9 @@ static void tickSendMqtt() {
       s.lastMqttSentMs = now;
     }
     g_prefs.end();
+#if NETTEMP_HEADLESS
+    }  // end else (headless autoscan check)
+#endif
   }
 
   // Local sensors (I2C / DS18B20 / DHT / VBAT): publish multiple messages (one per sensor_id).
@@ -1900,28 +1957,44 @@ static void tickSendMqtt() {
 
 #if NETTEMP_ENABLE_I2C
       if (g_cfg.i2cSendMqtt) {
+        Serial.printf("MQTT I2C: Checking %u I2C sensors for sending\n", (unsigned)g_i2cSensors.size());
+        unsigned int sentCount = 0;
         for (auto& s : g_i2cSensors) {
-          if (!s.selected) continue;
-          if (!s.reading.ok) continue;
-
           String addrHex = String(s.address, HEX);
           addrHex.toLowerCase();
           if (addrHex.length() == 1) addrHex = "0" + addrHex;
           const String typeName = String(i2cSensorTypeName(s.type));
+
+          if (!s.selected) {
+            Serial.printf("  [0x%s %s] NOT SELECTED\n", addrHex.c_str(), typeName.c_str());
+            continue;
+          }
+          if (!s.reading.ok) {
+            Serial.printf("  [0x%s %s] NO VALID READING\n", addrHex.c_str(), typeName.c_str());
+            continue;
+          }
+
           const String base = dev + "-i2c_0x" + addrHex + "_" + typeName;
+          Serial.printf("  [0x%s %s] Sending: ", addrHex.c_str(), typeName.c_str());
 
           if ((g_mqttI2cFields & SRV_I2C_TEMPC) && !isnan(s.reading.temperature_c)) {
             publishReading(base + "_tempc", "temperature", typeName + " temp", String(s.reading.temperature_c, 2));
+            Serial.printf("temp=%.2f ", s.reading.temperature_c);
           }
           if ((g_mqttI2cFields & SRV_I2C_HUM) && !isnan(s.reading.humidity_pct)) {
             publishReading(base + "_hum", "humidity", typeName + " hum", String(s.reading.humidity_pct, 1));
+            Serial.printf("hum=%.1f ", s.reading.humidity_pct);
           }
           if ((g_mqttI2cFields & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
             publishReading(base + "_press_hpa", "pressure", typeName + " press", String(s.reading.pressure_hpa, 1));
+            Serial.printf("press=%.1f ", s.reading.pressure_hpa);
           }
+          Serial.println();
 
           s.last_mqtt_sent_ms = now;
+          sentCount++;
         }
+        Serial.printf("MQTT I2C: Sent %u sensor(s)\n", sentCount);
       }
 #endif
 
@@ -1931,6 +2004,12 @@ static void tickSendMqtt() {
             if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
             char romHex[17]{};
             for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+            // Check if this sensor is selected for sending
+            const String selKey = String("dsSel_") + romHex;
+            g_prefs.begin("nettemp", true);
+            const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
+            g_prefs.end();
+            if (!selected) continue;
             publishReading(dev + "-ds18b20_" + String(romHex) + "_tempc", "temperature", "DS18B20 temp", String(g_dsTempsC[i], 2));
           }
         }
@@ -2067,16 +2146,26 @@ static void tickSendServer() {
   }
 
   if (g_cfg.i2cSendServer) {
+    Serial.printf("Server I2C: Checking %u I2C sensors for sending\n", (unsigned)g_i2cSensors.size());
     const String i2cDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    unsigned int sentCount = 0;
     for (const auto& s : g_i2cSensors) {
-      if (!s.selected) continue;
-      if (!s.reading.ok) continue;
-
       String addrHex = String(s.address, HEX);
       addrHex.toLowerCase();
       if (addrHex.length() == 1) addrHex = "0" + addrHex;
       const String typeName = String(i2cSensorTypeName(s.type));
+
+      if (!s.selected) {
+        Serial.printf("  [0x%s %s] NOT SELECTED\n", addrHex.c_str(), typeName.c_str());
+        continue;
+      }
+      if (!s.reading.ok) {
+        Serial.printf("  [0x%s %s] NO VALID READING\n", addrHex.c_str(), typeName.c_str());
+        continue;
+      }
+
       const String base = i2cDeviceId + "-i2c_" + typeName + "_0x" + addrHex;
+      Serial.printf("  [0x%s %s] Adding to batch\n", addrHex.c_str(), typeName.c_str());
 
       NettempBatch batch;
       batch.deviceId = i2cDeviceId;
@@ -2117,8 +2206,10 @@ static void tickSendServer() {
       if (!batch.readings.empty()) {
         nettempPostBatch(g_tlsClient, batch);
         anySent = true;
+        sentCount++;
       }
     }
+    Serial.printf("Server I2C: Sent %u sensor(s)\n", sentCount);
   }
 
   // GPIO sensors (DS18B20 / DHT) are sent under the configured device_id (same as I2C).
@@ -2134,6 +2225,12 @@ static void tickSendServer() {
         if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
         char romHex[17]{};
         for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+        // Check if this sensor is selected for sending
+        const String selKey = String("dsSel_") + romHex;
+        g_prefs.begin("nettemp", true);
+        const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
+        g_prefs.end();
+        if (!selected) continue;
         const String base = gpioDeviceId + "-ds18b20_" + String(romHex);
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_temp",
@@ -2447,6 +2544,12 @@ static void tickSendWebhook() {
         if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
         char romHex[17]{};
         for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+        // Check if this sensor is selected for sending
+        const String selKey = String("dsSel_") + romHex;
+        g_prefs.begin("nettemp", true);
+        const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
+        g_prefs.end();
+        if (!selected) continue;
         const String base = deviceId + "-ds18b20_" + String(romHex);
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_temp",
@@ -2599,6 +2702,7 @@ static void handleKeys() {
       g_i2cSensors[g_i2cCursor].selected = !g_i2cSensors[g_i2cCursor].selected;
     }
     if (keyboardPressedEnter()) {
+      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
       g_i2cSensors = i2cDetectKnownSensors(Wire);
       if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
       i2cApplySelectionToDetected();
@@ -2670,6 +2774,7 @@ void setup() {
   oledInit();
 #endif
 #if NETTEMP_ENABLE_I2C
+  g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
   g_i2cSensors = i2cDetectKnownSensors(Wire);
   if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
 #if NETTEMP_HEADLESS
