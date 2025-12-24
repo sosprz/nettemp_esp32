@@ -14,7 +14,7 @@ static bool vbatReadVolts(float& outV) {
   if (g_cfg.vbatMode == 0) return false;
 
   if (g_cfg.vbatMode == 2) {
-#if !NETTEMP_HEADLESS
+#if NETTEMP_CARDPUTER_UI
     // Cardputer PMIC (best-effort; only if the M5Cardputer Power API provides it).
     struct M5Pmic {
       template <typename T>

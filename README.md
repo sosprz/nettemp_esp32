@@ -30,10 +30,11 @@ If you see NimBLE compile errors, make sure you installed **NimBLE-Arduino** (no
 - After WiFi connects: open `http://<device-ip>/` (Basic Auth) to configure BLE/I2C/MQTT/Server.
 - On device: `BtnA/BtnB` move, `Enter` select, `Esc` back.
 
-### Headless mode (no display)
-- Auto-enabled when Cardputer is not detected.
-- Force with `#define NETTEMP_HEADLESS 1` (or build flag `-DNETTEMP_HEADLESS=1`).
-- Configure via Serial Monitor (`115200`).
+### UI build selection
+- Cardputer UI auto-enables when Cardputer board is detected.
+- Force UI on/off with build flags:
+  - `-DNETTEMP_CARDPUTER_UI=1`
+  - `-DNETTEMP_CARDPUTER_UI=0`
 
 ### Compile-time toggles (size/features)
 In `nettemp_esp32.ino`:
@@ -60,6 +61,6 @@ Auth: `Authorization: Bearer ntk_...`
 
 ### Code layout
 - `nettemp_esp32.ino` (main)
-- `nettemp_core.inc`, `nettemp_web.inc`, `nettemp_headless.inc`, `nettemp_power.inc`
+- `nettemp_core.inc`, `nettemp_web.inc`, `nettemp_power.inc`
 
 ---

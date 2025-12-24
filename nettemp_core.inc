@@ -31,7 +31,7 @@ constexpr uint32_t SPLASH_MS = 1100;
 constexpr uint32_t QR_ROTATE_MS = 2000;
 constexpr const char* NETTEMP_APP_URL = "https://app.nettemp.pl";
 
-#if !NETTEMP_HEADLESS
+#if NETTEMP_CARDPUTER_UI
 constexpr uint16_t COLOR_BG = TFT_BLACK;
 constexpr uint16_t COLOR_FG = TFT_WHITE;
 constexpr uint16_t COLOR_ACCENT = TFT_BLUE;
@@ -132,7 +132,7 @@ struct AppSettings {
   // Battery (VBAT)
   // mode: 0=off, 1=adc, 2=pmic (Cardputer)
   uint8_t vbatMode =
-#if !NETTEMP_HEADLESS
+#if NETTEMP_CARDPUTER_UI
     2
 #else
     1
@@ -190,6 +190,7 @@ uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 
 std::vector<SensorRow> g_sensors;
+bool g_bleAutoScan = true;
 bool g_activeScan = false;
 int g_bleCursor = 0;
 uint8_t g_bleMaxResults = 20;
@@ -264,7 +265,6 @@ uint32_t g_lastWebhookSendMs = 0;
 uint32_t g_lastSerialRxMs = 0;
 bool g_i2cBegun = false;
 
-#if !NETTEMP_HEADLESS
 enum class View {
   MainMenu,
   ScanBle,
@@ -279,16 +279,6 @@ enum class View {
 View g_view = View::MainMenu;
 int g_menuIndex = 0;
 uint32_t g_lastQrTickMs = 0;
-#else
-bool g_headlessAutoSelect = true;
-bool g_headlessStatusLogEnabled = false;
-uint32_t g_headlessStatusLogIntervalMs = 30'000;
-bool g_headlessBleAutoScan = false;
-bool g_headlessBleScanCollectUnknown = false;
-bool g_headlessDiagnosticsScanActive = false;
-uint32_t g_lastHeadlessLogMs = 0;
-String g_serialLineBuf;
-#endif
 
 // Arduino IDE does not auto-generate prototypes inside namespaces.
 static void prefsSave();
@@ -581,6 +571,7 @@ static void prefsLoad() {
   if (g_cfg.vbatEmptyMv < 2500) g_cfg.vbatEmptyMv = 3200;
   if (g_cfg.vbatEmptyMv > 4200) g_cfg.vbatEmptyMv = 3200;
 
+  g_bleAutoScan = g_prefs.getBool("bleAuto", true);
   g_activeScan = g_prefs.getBool("bleAct", false);
   {
     const uint32_t v = g_prefs.getUInt("bleMax", (uint32_t)g_bleMaxResults);
@@ -589,14 +580,6 @@ static void prefsLoad() {
     else g_bleMaxResults = (uint8_t)v;
   }
   g_bleParseMfg = g_prefs.getBool("bleMfg", g_bleParseMfg);
-#if NETTEMP_HEADLESS
-  g_headlessStatusLogEnabled = g_prefs.getBool("hlLogEn", g_headlessStatusLogEnabled);
-  {
-    const uint32_t v = g_prefs.getUInt("hlLogInt", g_headlessStatusLogIntervalMs);
-    g_headlessStatusLogIntervalMs = std::min<uint32_t>(300'000, std::max<uint32_t>(1000, v));
-  }
-  g_headlessBleAutoScan = g_prefs.getBool("bleAuto", g_headlessBleAutoScan);
-#endif
 #if NETTEMP_ENABLE_PORTAL
   g_portalAuto = g_prefs.getBool("apAuto", g_portalAuto);
 #endif
@@ -762,14 +745,10 @@ static void prefsSave() {
   g_prefs.putUShort("vbEmp", g_cfg.vbatEmptyMv);
   g_prefs.putBool("vbSV", g_cfg.vbatSendVolt);
 
+  g_prefs.putBool("bleAuto", g_bleAutoScan);
   g_prefs.putBool("bleAct", g_activeScan);
   g_prefs.putUInt("bleMax", (uint32_t)g_bleMaxResults);
   g_prefs.putBool("bleMfg", g_bleParseMfg);
-#if NETTEMP_HEADLESS
-  g_prefs.putBool("hlLogEn", g_headlessStatusLogEnabled);
-  g_prefs.putUInt("hlLogInt", g_headlessStatusLogIntervalMs);
-  g_prefs.putBool("bleAuto", g_headlessBleAutoScan);
-#endif
 #if NETTEMP_ENABLE_PORTAL
   g_prefs.putBool("apAuto", g_portalAuto);
 #endif
