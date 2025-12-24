@@ -167,6 +167,7 @@ constexpr uint32_t SRV_BLE_VOLT = 1u << 4;
 constexpr uint32_t SRV_BLE_RSSI = 1u << 5;
 uint32_t g_srvBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 uint32_t g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+uint32_t g_webhookBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 
 // I2C → Server (Cloud) field selection.
 // Defaults: tempc + hum + press_hpa
@@ -175,6 +176,7 @@ constexpr uint32_t SRV_I2C_HUM = 1u << 1;
 constexpr uint32_t SRV_I2C_PRESS = 1u << 2;
 uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 
 std::vector<SensorRow> g_sensors;
 bool g_activeScan = false;
@@ -185,6 +187,7 @@ bool g_bleParseMfg = NETTEMP_BLE_PARSE_MFG;
 #if NETTEMP_ENABLE_I2C
 std::vector<I2cSensorInfo> g_i2cSensors;
 std::vector<uint8_t> g_i2cDetectedAddrs;
+std::vector<I2cSensorInfo> g_i2cCachedSensors;
 int g_i2cCursor = 0;
 uint32_t g_lastI2cPollMs = 0;
 
@@ -284,6 +287,9 @@ static String serverBleFieldsEnabledString();
 static String serverBleFieldsAvailableString();
 static void tickSendMqtt();
 static void tickSendServer();
+#if NETTEMP_ENABLE_SERVER
+static void tickSendWebhook();
+#endif
 static void mqttEnsureConnected();
 static String serverI2cFieldsEnabledString();
 static String serverI2cFieldsAvailableString();
@@ -377,6 +383,54 @@ static void bleManualDecode(const String& s) {
   }
 }
 
+#if NETTEMP_ENABLE_I2C
+static String i2cSerializeSensors(const std::vector<I2cSensorInfo>& sensors) {
+  String out;
+  for (const auto& s : sensors) {
+    if (out.length()) out += ",";
+    if (s.address < 16) out += "0";
+    out += String(s.address, HEX);
+    out += ":";
+    out += String((int)s.type);
+  }
+  out.toLowerCase();
+  return out;
+}
+
+static void i2cLoadCachedSensors(const String& s) {
+  g_i2cCachedSensors.clear();
+  int pos = 0;
+  while (pos < (int)s.length()) {
+    int comma = s.indexOf(',', pos);
+    if (comma < 0) comma = (int)s.length();
+    const String part = s.substring(pos, comma);
+    pos = comma + 1;
+    if (!part.length()) continue;
+    const int colon = part.indexOf(':');
+    if (colon <= 0) continue;
+    const String addrStr = part.substring(0, colon);
+    const String typeStr = part.substring(colon + 1);
+    const uint8_t addr = (uint8_t)strtoul(addrStr.c_str(), nullptr, 16);
+    const int typeVal = typeStr.toInt();
+    I2cSensorInfo info;
+    info.address = addr;
+    info.type = (I2cSensorType)typeVal;
+    info.selected = true;
+    g_i2cCachedSensors.push_back(info);
+  }
+}
+
+static void i2cPersistLastDetected() {
+  if (g_i2cSensors.empty()) return;
+  const String now = i2cSerializeSensors(g_i2cSensors);
+  if (!now.length()) return;
+  g_prefs.begin("nettemp", false);
+  const String prev = g_prefs.getString("i2cLast", "");
+  if (prev != now) g_prefs.putString("i2cLast", now);
+  g_prefs.end();
+}
+#endif
+
 static void prefsLoad() {
   g_prefs.begin("nettemp", true);
   g_cfg.deviceId = g_prefs.getString("deviceId", g_cfg.deviceId);
@@ -418,6 +472,10 @@ static void prefsLoad() {
   if (g_mqttBleFields == 0) g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_mqttI2cFields = g_prefs.getUInt("mqI2cF", g_mqttI2cFields);
   if (g_mqttI2cFields == 0) g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  g_webhookBleFields = g_prefs.getUInt("whBleF", g_webhookBleFields);
+  if (g_webhookBleFields == 0) g_webhookBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+  g_webhookI2cFields = g_prefs.getUInt("whI2cF", g_webhookI2cFields);
+  if (g_webhookI2cFields == 0) g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
   bleManualDecode(g_prefs.getString("bleMan", ""));
 
   g_cfg.dsEnabled = g_prefs.getBool("dsEn", g_cfg.dsEnabled);
@@ -537,6 +595,7 @@ static void prefsLoad() {
       }
     }
   }
+  i2cLoadCachedSensors(g_prefs.getString("i2cLast", ""));
 #endif
   g_prefs.end();
 
@@ -605,7 +664,14 @@ static void prefsSave() {
   g_prefs.putUInt("srvI2cF", g_srvI2cFields);
   g_prefs.putUInt("mqBleF", g_mqttBleFields);
   g_prefs.putUInt("mqI2cF", g_mqttI2cFields);
+  g_prefs.putUInt("whBleF", g_webhookBleFields);
+  g_prefs.putUInt("whI2cF", g_webhookI2cFields);
   g_prefs.putString("bleMan", bleManualEncode());
+#if NETTEMP_ENABLE_I2C
+  if (!g_i2cSensors.empty()) {
+    g_prefs.putString("i2cLast", i2cSerializeSensors(g_i2cSensors));
+  }
+#endif
 
   g_prefs.putBool("dsEn", g_cfg.dsEnabled);
   g_prefs.putInt("dsPin", g_cfg.dsPin);
@@ -726,8 +792,23 @@ static String keyTail10(const String& s) {
 }
 
 static String prefKeyBleName(const String& macNo) { return String("bn") + keyTail10(macNo); }
-static String prefKeyDsName(const String& romHex) { return String("dn") + keyTail10(romHex); }
-static String prefKeyDsI2cName(const String& romHex) { return String("dni") + keyTail10(romHex); }
+static uint32_t fnv1a32(const String& s) {
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < s.length(); i++) {
+    h ^= (uint8_t)s[i];
+    h *= 16777619u;
+  }
+  return h;
+}
+
+static String dsKeySuffix(const String& romHex) {
+  char buf[9]{};
+  snprintf(buf, sizeof(buf), "%08x", (unsigned)fnv1a32(romHex));
+  return String(buf);
+}
+
+static String prefKeyDsNameLegacy(const String& romHex) { return String("dn") + keyTail10(romHex); }
+static String prefKeyDsName(const String& romHex) { return String("dn") + dsKeySuffix(romHex); }
 static String prefKeyI2cName(const String& addrHex) { return String("in") + addrHex; }
 
 static String prefKeyBleOledSel(const String& macNo) { return String("ob") + keyTail10(macNo); }

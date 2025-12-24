@@ -56,7 +56,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <vector>
-#include "ds2482.h"
+#include <algorithm>
 #include "nettemp_core.inc"
 
 #if NETTEMP_ENABLE_OLED
@@ -481,6 +481,11 @@ static void oledTick() {
     const String v = g_prefs.getString(key.c_str(), "");
     return v.length() ? v : fallback;
   };
+  auto prefDsName = [&](const String& romHex, const String& fallback) -> String {
+    String v = g_prefs.getString(prefKeyDsName(romHex).c_str(), "");
+    if (!v.length()) v = g_prefs.getString(prefKeyDsNameLegacy(romHex).c_str(), "");
+    return v.length() ? v : fallback;
+  };
 
   for (const auto& s : g_sensors) {
     const String macNo = macNoColonsUpper(s.mac);
@@ -549,7 +554,7 @@ static void oledTick() {
     const String selKey = prefKeyDsOledSel(romHex);
     if (!prefBool(selKey)) continue;
     OledEntry entry;
-    entry.name = prefName(prefKeyDsName(romHex), String("DS18B20 ") + romHex);
+    entry.name = prefDsName(romHex, String("DS18B20 ") + romHex);
     const float tempc = (i < g_dsTempsC.size()) ? g_dsTempsC[i] : NAN;
     if (prefBool(prefKeyDsOledTempc(romHex))) {
       oledEntryAddLine(entry, "T: " + (isnan(tempc) ? String("-") : String(tempc, 1)) + "C");
@@ -617,16 +622,28 @@ static void oledTick() {
 
 
 
+static uint32_t g_lastMqttSkipLogMs = 0;
+static uint32_t g_lastServerSkipLogMs = 0;
+static uint32_t g_lastWebhookSkipLogMs = 0;
+
+static void logSkipEvery(uint32_t& lastLogMs, const char* msg, uint32_t intervalMs = 5000) {
+  const uint32_t now = millis();
+  if (lastLogMs == 0 || (now - lastLogMs) >= intervalMs) {
+    lastLogMs = now;
+    Serial.println(msg);
+  }
+}
+
 static void mqttEnsureConnected() {
 #if !NETTEMP_ENABLE_MQTT
   return;
 #else
   if (!g_cfg.mqttEnabled) {
-    Serial.println("MQTT: Disabled");
+    logSkipEvery(g_lastMqttSkipLogMs, "MQTT: Disabled");
     return;
   }
   if (!wifiConnected()) {
-    Serial.println("MQTT: WiFi not connected");
+    logSkipEvery(g_lastMqttSkipLogMs, "MQTT: WiFi not connected");
     return;
   }
 
@@ -709,6 +726,18 @@ static String macWithColonsUpper(const String& mac) {
     out += (char)toupper((unsigned char)c);
   }
   return out;
+}
+
+static String dsRomLinuxIdSimple(const std::array<uint8_t, 8>& rom) {
+  char out[20]{};
+  char serial[13]{};
+  // Linux w1 serial is bytes 1..6 reversed (no CRC).
+  snprintf(serial, sizeof(serial), "%02X%02X%02X%02X%02X%02X",
+           rom[6], rom[5], rom[4], rom[3], rom[2], rom[1]);
+  snprintf(out, sizeof(out), "%02X_%s", (unsigned)rom[0], serial);
+  String s(out);
+  s.toLowerCase();
+  return s;
 }
 
 static String normalizeMacToColonsUpper(String mac) {
@@ -1189,6 +1218,17 @@ static void dsRescan() {
     }
     std::array<uint8_t, 8> rom{};
     for (int i = 0; i < 8; i++) rom[i] = addr[i];
+    bool exists = false;
+    for (const auto& e : g_dsRoms) {
+      if (e == rom) {
+        exists = true;
+        break;
+      }
+    }
+    if (exists) {
+      Serial.println("  Duplicate DS18B20 ignored");
+      continue;
+    }
     g_dsRoms.push_back(rom);
     Serial.printf("  Found DS18B20: ");
     for (int i = 0; i < 8; i++) Serial.printf("%02X", rom[i]);
@@ -1863,16 +1903,16 @@ static void tickSendMqtt() {
   return;
 #else
   if (!g_cfg.mqttEnabled) {
-    Serial.println("MQTT send skipped: MQTT not enabled (check Channels→MQTT→Enable MQTT checkbox)");
+    logSkipEvery(g_lastMqttSkipLogMs, "MQTT send skipped: MQTT not enabled (check Channels→MQTT→Enable MQTT checkbox)");
     return;
   }
   if (!wifiConnected()) {
-    Serial.println("MQTT send skipped: WiFi not connected");
+    logSkipEvery(g_lastMqttSkipLogMs, "MQTT send skipped: WiFi not connected");
     return;
   }
   mqttEnsureConnected();
   if (!g_mqtt.connected()) {
-    Serial.println("MQTT send failed: not connected to broker");
+    logSkipEvery(g_lastMqttSkipLogMs, "MQTT send failed: not connected to broker");
     return;
   }
 
@@ -1894,11 +1934,8 @@ static void tickSendMqtt() {
 
   if (g_cfg.bleSendMqtt) {
 #if NETTEMP_HEADLESS
-    // In headless mode: publish BLE only when background autoscan is enabled.
     // Diagnostic scans (`ble scan`) must never publish.
-    if (!g_headlessBleAutoScan) {
-      Serial.println("MQTT BLE: Skipped (headless autoscan disabled)");
-    } else if (g_headlessDiagnosticsScanActive) {
+    if (g_headlessDiagnosticsScanActive) {
       Serial.println("MQTT BLE: Skipped (diagnostic scan active)");
     } else {
 #endif
@@ -1942,7 +1979,7 @@ static void tickSendMqtt() {
     }
     g_prefs.end();
 #if NETTEMP_HEADLESS
-    }  // end else (headless autoscan check)
+    }
 #endif
   }
 
@@ -1950,9 +1987,16 @@ static void tickSendMqtt() {
   {
     const uint32_t now = millis();
     if (g_cfg.mqttIntervalMs == 0 || g_lastMqttLocalSentMs == 0 || (now - g_lastMqttLocalSentMs) >= g_cfg.mqttIntervalMs) {
+      bool anyLocalSent = false;
       const String dev = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
       auto publishReading = [&](const String& sensorId, const char* sensorType, const String& name, const String& valueStr) {
         publishNettemp(dev, sensorId, sensorType, name, valueStr);
+        anyLocalSent = true;
+      };
+      auto publishReadingFor = [&](const String& deviceId, const String& sensorId, const char* sensorType, const String& name,
+                                   const String& valueStr) {
+        publishNettemp(deviceId, sensorId, sensorType, name, valueStr);
+        anyLocalSent = true;
       };
 
 #if NETTEMP_ENABLE_I2C
@@ -2010,7 +2054,9 @@ static void tickSendMqtt() {
             const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
             g_prefs.end();
             if (!selected) continue;
-            publishReading(dev + "-ds18b20_" + String(romHex) + "_tempc", "temperature", "DS18B20 temp", String(g_dsTempsC[i], 2));
+            const String dsId = dsRomLinuxIdSimple(g_dsRoms[i]);
+            const String sensorId = dev + "-" + dsId;
+            publishReadingFor(dev, sensorId, "temperature", "DS18B20 temp", String(g_dsTempsC[i], 2));
           }
         }
 
@@ -2039,7 +2085,7 @@ static void tickSendMqtt() {
         }
       }
 
-      g_lastMqttLocalSentMs = now;
+      if (anyLocalSent) g_lastMqttLocalSentMs = now;
     }
   }
 
@@ -2051,9 +2097,18 @@ static void tickSendServer() {
 #if !NETTEMP_ENABLE_SERVER
   return;
 #else
-  if (!g_cfg.serverEnabled) return;
-  if (!wifiConnected()) return;
-  if (g_cfg.serverApiKey.length() == 0) return;
+  if (!g_cfg.serverEnabled) {
+    logSkipEvery(g_lastServerSkipLogMs, "Server send skipped: Server not enabled");
+    return;
+  }
+  if (!wifiConnected()) {
+    logSkipEvery(g_lastServerSkipLogMs, "Server send skipped: WiFi not connected");
+    return;
+  }
+  if (g_cfg.serverApiKey.length() == 0) {
+    logSkipEvery(g_lastServerSkipLogMs, "Server send skipped: API key not set");
+    return;
+  }
   if (g_cfg.serverIntervalMs > 0 && g_lastServerSendMs != 0 && (millis() - g_lastServerSendMs) < g_cfg.serverIntervalMs) return;
 
   const uint32_t ts = (uint32_t)(time(nullptr) > 100000 ? time(nullptr) : (millis() / 1000));
@@ -2231,15 +2286,22 @@ static void tickSendServer() {
         const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
         g_prefs.end();
         if (!selected) continue;
-        const String base = gpioDeviceId + "-ds18b20_" + String(romHex);
-        batch.readings.push_back(NettempReading{
-          .sensorId = base + "_temp",
+        const String dsId = dsRomLinuxIdSimple(g_dsRoms[i]);
+        const String sensorId = gpioDeviceId + "-" + dsId;
+        NettempBatch dsBatch;
+        dsBatch.deviceId = gpioDeviceId;
+        dsBatch.apiKey = g_cfg.serverApiKey;
+        dsBatch.baseUrl = g_cfg.serverBaseUrl;
+        dsBatch.readings.push_back(NettempReading{
+          .sensorId = sensorId,
           .value = g_dsTempsC[i],
           .sensorType = "temperature",
           .unit = "°C",
           .timestamp = ts,
           .friendlyName = "DS18B20 temp",
         });
+        nettempPostBatch(g_tlsClient, dsBatch);
+        anySent = true;
       }
     }
 
@@ -2399,9 +2461,18 @@ static bool webhookPostJson(const String& url, const String& payload) {
 }
 
 static void tickSendWebhook() {
-  if (!g_cfg.webhookEnabled) return;
-  if (!wifiConnected()) return;
-  if (!g_cfg.webhookUrl.length()) return;
+  if (!g_cfg.webhookEnabled) {
+    logSkipEvery(g_lastWebhookSkipLogMs, "Webhook send skipped: Webhook not enabled");
+    return;
+  }
+  if (!wifiConnected()) {
+    logSkipEvery(g_lastWebhookSkipLogMs, "Webhook send skipped: WiFi not connected");
+    return;
+  }
+  if (!g_cfg.webhookUrl.length()) {
+    logSkipEvery(g_lastWebhookSkipLogMs, "Webhook send skipped: Webhook URL not set");
+    return;
+  }
   if (g_cfg.webhookIntervalMs > 0 && g_lastWebhookSendMs != 0 &&
       (millis() - g_lastWebhookSendMs) < g_cfg.webhookIntervalMs) return;
 
@@ -2415,7 +2486,7 @@ static void tickSendWebhook() {
     const String macNoColons = macNoColonsUpper(mac);
     NettempBatch batch;
     batch.deviceId = macNoColons;
-    if ((g_srvBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
+    if ((g_webhookBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_tempc",
         .value = s.temperatureC,
@@ -2425,7 +2496,7 @@ static void tickSendWebhook() {
         .friendlyName = "temperature",
       });
     }
-    if ((g_srvBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
+    if ((g_webhookBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_tempf",
         .value = (s.temperatureC * 9.0f / 5.0f) + 32.0f,
@@ -2435,7 +2506,7 @@ static void tickSendWebhook() {
         .friendlyName = "temperature_f",
       });
     }
-    if ((g_srvBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
+    if ((g_webhookBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_hum",
         .value = s.humidityPct,
@@ -2445,7 +2516,7 @@ static void tickSendWebhook() {
         .friendlyName = "humidity",
       });
     }
-    if ((g_srvBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
+    if ((g_webhookBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_batt",
         .value = (float)s.batteryPct,
@@ -2455,7 +2526,7 @@ static void tickSendWebhook() {
         .friendlyName = "battery",
       });
     }
-    if ((g_srvBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
+    if ((g_webhookBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_volt",
         .value = (float)s.voltageMv / 1000.0f,
@@ -2465,7 +2536,7 @@ static void tickSendWebhook() {
         .friendlyName = "volt",
       });
     }
-    if ((g_srvBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
+    if ((g_webhookBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
       batch.readings.push_back(NettempReading{
         .sensorId = macNoColons + "_rssi",
         .value = (float)s.rssi,
@@ -2496,7 +2567,7 @@ static void tickSendWebhook() {
       const String base = i2cDeviceId + "-i2c_" + typeName + "_0x" + addrHex;
       NettempBatch batch;
       batch.deviceId = i2cDeviceId;
-      if ((g_srvI2cFields & SRV_I2C_TEMPC) && !isnan(s.reading.temperature_c)) {
+      if ((g_webhookI2cFields & SRV_I2C_TEMPC) && !isnan(s.reading.temperature_c)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_temp",
           .value = s.reading.temperature_c,
@@ -2506,7 +2577,7 @@ static void tickSendWebhook() {
           .friendlyName = typeName + " temp",
         });
       }
-      if ((g_srvI2cFields & SRV_I2C_HUM) && !isnan(s.reading.humidity_pct)) {
+      if ((g_webhookI2cFields & SRV_I2C_HUM) && !isnan(s.reading.humidity_pct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_hum",
           .value = s.reading.humidity_pct,
@@ -2516,7 +2587,7 @@ static void tickSendWebhook() {
           .friendlyName = typeName + " hum",
         });
       }
-      if ((g_srvI2cFields & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
+      if ((g_webhookI2cFields & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_press",
           .value = s.reading.pressure_hpa,
@@ -2550,15 +2621,21 @@ static void tickSendWebhook() {
         const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
         g_prefs.end();
         if (!selected) continue;
-        const String base = deviceId + "-ds18b20_" + String(romHex);
-        batch.readings.push_back(NettempReading{
-          .sensorId = base + "_temp",
+        const String dsId = dsRomLinuxIdSimple(g_dsRoms[i]);
+        const String sensorId = deviceId + "-" + dsId;
+        NettempBatch dsBatch;
+        dsBatch.deviceId = deviceId;
+        dsBatch.readings.push_back(NettempReading{
+          .sensorId = sensorId,
           .value = g_dsTempsC[i],
           .sensorType = "temperature",
           .unit = "°C",
           .timestamp = ts,
           .friendlyName = "DS18B20 temp",
         });
+        const String payload = buildWebhookPayload(dsBatch);
+        webhookPostJson(g_cfg.webhookUrl, payload);
+        anySent = true;
       }
     }
     if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
@@ -2777,6 +2854,13 @@ void setup() {
   g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
   g_i2cSensors = i2cDetectKnownSensors(Wire);
   if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+  if (g_i2cSensors.empty() && !g_i2cCachedSensors.empty()) {
+    g_i2cSensors = g_i2cCachedSensors;
+    g_i2cDetectedAddrs.clear();
+    for (const auto& s : g_i2cCachedSensors) g_i2cDetectedAddrs.push_back(s.address);
+  } else {
+    i2cPersistLastDetected();
+  }
 #if NETTEMP_HEADLESS
   if (g_i2cSelDefined) {
     i2cApplySelectionToDetected();
@@ -2867,6 +2951,16 @@ void loop() {
   if (nowMs - g_lastI2cPollMs >= 2000) {
     g_lastI2cPollMs = nowMs;
     if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+  }
+  if (g_i2cSensors.empty()) {
+    static uint32_t s_lastI2cRescanMs = 0;
+    if (s_lastI2cRescanMs == 0 || (nowMs - s_lastI2cRescanMs) >= 10'000UL) {
+      s_lastI2cRescanMs = nowMs;
+      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
+      g_i2cSensors = i2cDetectKnownSensors(Wire);
+      if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+      if (g_i2cSelDefined) i2cApplySelectionToDetected();
+    }
   }
 #endif
 
