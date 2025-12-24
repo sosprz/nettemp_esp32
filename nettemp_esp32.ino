@@ -624,6 +624,7 @@ static void oledTick() {
 
 static uint32_t g_lastMqttSkipLogMs = 0;
 static uint32_t g_lastServerSkipLogMs = 0;
+static uint32_t g_lastLocalServerSkipLogMs = 0;
 static uint32_t g_lastWebhookSkipLogMs = 0;
 
 static void logSkipEvery(uint32_t& lastLogMs, const char* msg, uint32_t intervalMs = 5000) {
@@ -2350,7 +2351,7 @@ static void tickSendServer() {
 
     if (g_cfg.soilEnabled && g_soilRaw >= 0) {
       const String base = gpioDeviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
-      if (g_cfg.soilSendRaw) {
+      if (g_cfg.localSoilSendRaw) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_raw",
           .value = (float)g_soilRaw,
@@ -2360,7 +2361,7 @@ static void tickSendServer() {
           .friendlyName = "soil raw",
         });
       }
-      if (g_cfg.soilSendPct && !isnan(g_soilPct)) {
+      if (g_cfg.localSoilSendPct && !isnan(g_soilPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_pct",
           .value = g_soilPct,
@@ -2390,6 +2391,311 @@ static void tickSendServer() {
   }
 
   if (anySent) g_lastServerSendMs = millis();
+#endif
+}
+
+static void tickSendLocalServer() {
+#if !NETTEMP_ENABLE_SERVER
+  return;
+#else
+  if (!g_cfg.localServerEnabled) {
+    logSkipEvery(g_lastLocalServerSkipLogMs, "Local server send skipped: Local server not enabled");
+    return;
+  }
+  if (!wifiConnected()) {
+    logSkipEvery(g_lastLocalServerSkipLogMs, "Local server send skipped: WiFi not connected");
+    return;
+  }
+  if (!g_cfg.localServerUrl.length()) {
+    logSkipEvery(g_lastLocalServerSkipLogMs, "Local server send skipped: URL not set");
+    return;
+  }
+  if (g_cfg.localServerIntervalMs > 0 && g_lastLocalServerSendMs != 0 &&
+      (millis() - g_lastLocalServerSendMs) < g_cfg.localServerIntervalMs) return;
+
+  const uint32_t ts = (uint32_t)(time(nullptr) > 100000 ? time(nullptr) : (millis() / 1000));
+  bool anySent = false;
+
+  if (g_cfg.bleSendLocalServer) {
+    const String bleDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    g_prefs.begin("nettemp", true);
+    auto bleNameOr = [&](const String& macNo, const char* fallback) -> String {
+      const String name = g_prefs.getString(prefKeyBleName(macNo).c_str(), "");
+      return name.length() ? name : String(fallback);
+    };
+    for (const auto& s : g_sensors) {
+      if (!s.selected) continue;
+      const String macNoColons = macNoColonsUpper(s.mac);
+      const String base = bleDeviceId + "-ble_" + macNoColons;
+
+      NettempBatch batch;
+      batch.endpoint = g_cfg.localServerUrl;
+      batch.apiKey = g_cfg.localServerApiKey;
+      batch.requireApiKey = false;
+      batch.deviceId = bleDeviceId;
+
+      if ((g_srvBleFields & SRV_BLE_TEMPC) && !isnan(s.temperatureC)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = s.temperatureC,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "temperature"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_TEMPF) && !isnan(s.temperatureC)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_tempf",
+          .value = (s.temperatureC * 9.0f / 5.0f) + 32.0f,
+          .sensorType = "temperature_f",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "temperature_f"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_HUM) && !isnan(s.humidityPct)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_hum",
+          .value = s.humidityPct,
+          .sensorType = "humidity",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "humidity"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_BATT) && s.batteryPct >= 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_batt",
+          .value = (float)s.batteryPct,
+          .sensorType = "battery",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "battery"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_VOLT) && s.voltageMv >= 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_volt",
+          .value = (float)s.voltageMv / 1000.0f,
+          .sensorType = "voltage",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "volt"),
+        });
+      }
+      if ((g_srvBleFields & SRV_BLE_RSSI) && s.rssi != 0) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_rssi",
+          .value = (float)s.rssi,
+          .sensorType = "rssi",
+          .unit = "dBm",
+          .timestamp = ts,
+          .friendlyName = bleNameOr(macNoColons, "rssi"),
+        });
+      }
+
+      if (!batch.readings.empty()) {
+        nettempPostBatch(g_tlsClient, batch);
+        anySent = true;
+      }
+    }
+    g_prefs.end();
+  }
+
+  if (g_cfg.i2cSendLocalServer) {
+    Serial.printf("Local server I2C: Checking %u I2C sensors for sending\n", (unsigned)g_i2cSensors.size());
+    const String i2cDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    unsigned int sentCount = 0;
+    for (const auto& s : g_i2cSensors) {
+      String addrHex = String(s.address, HEX);
+      addrHex.toLowerCase();
+      if (addrHex.length() == 1) addrHex = "0" + addrHex;
+      const String typeName = String(i2cSensorTypeName(s.type));
+
+      if (!s.selected) {
+        Serial.printf("  [0x%s %s] NOT SELECTED\n", addrHex.c_str(), typeName.c_str());
+        continue;
+      }
+      if (!s.reading.ok) {
+        Serial.printf("  [0x%s %s] NO VALID READING\n", addrHex.c_str(), typeName.c_str());
+        continue;
+      }
+
+      const String base = i2cDeviceId + "-i2c_" + typeName + "_0x" + addrHex;
+      Serial.printf("  [0x%s %s] Adding to batch\n", addrHex.c_str(), typeName.c_str());
+
+      NettempBatch batch;
+      batch.endpoint = g_cfg.localServerUrl;
+      batch.apiKey = g_cfg.localServerApiKey;
+      batch.requireApiKey = false;
+      batch.deviceId = i2cDeviceId;
+
+      if ((g_srvI2cFields & SRV_I2C_TEMPC) && !isnan(s.reading.temperature_c)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = s.reading.temperature_c,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = typeName + " temp",
+        });
+      }
+      if ((g_srvI2cFields & SRV_I2C_HUM) && !isnan(s.reading.humidity_pct)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_hum",
+          .value = s.reading.humidity_pct,
+          .sensorType = "humidity",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = typeName + " hum",
+        });
+      }
+      if ((g_srvI2cFields & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_press",
+          .value = s.reading.pressure_hpa,
+          .sensorType = "pressure",
+          .unit = "hPa",
+          .timestamp = ts,
+          .friendlyName = typeName + " press",
+        });
+      }
+
+      if (!batch.readings.empty()) {
+        nettempPostBatch(g_tlsClient, batch);
+        anySent = true;
+        sentCount++;
+      }
+    }
+    Serial.printf("Local server I2C: Sent %u sensor(s)\n", sentCount);
+  }
+
+  if (g_cfg.gpioSendLocalServer) {
+    const String gpioDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+
+    if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
+      for (size_t i = 0; i < g_dsRoms.size(); i++) {
+        if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
+        char romHex[17]{};
+        for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
+        const String selKey = String("dsSel_") + romHex;
+        g_prefs.begin("nettemp", true);
+        const bool selected = g_prefs.getBool(selKey.c_str(), true);
+        g_prefs.end();
+        if (!selected) continue;
+        const String dsId = dsRomLinuxIdSimple(g_dsRoms[i]);
+        const String sensorId = gpioDeviceId + "-" + dsId;
+        NettempBatch dsBatch;
+        dsBatch.endpoint = g_cfg.localServerUrl;
+        dsBatch.apiKey = g_cfg.localServerApiKey;
+        dsBatch.requireApiKey = false;
+        dsBatch.deviceId = gpioDeviceId;
+        dsBatch.readings.push_back(NettempReading{
+          .sensorId = sensorId,
+          .value = g_dsTempsC[i],
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = "DS18B20 temp",
+        });
+        nettempPostBatch(g_tlsClient, dsBatch);
+        anySent = true;
+      }
+    }
+
+    NettempBatch batch;
+    batch.endpoint = g_cfg.localServerUrl;
+    batch.apiKey = g_cfg.localServerApiKey;
+    batch.requireApiKey = false;
+    batch.deviceId = gpioDeviceId;
+
+    if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
+      const String base = gpioDeviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
+      batch.readings.push_back(NettempReading{
+        .sensorId = base + "_temp",
+        .value = g_dhtTempC,
+        .sensorType = "temperature",
+        .unit = "°C",
+        .timestamp = ts,
+        .friendlyName = "DHT temp",
+      });
+      if (!isnan(g_dhtHumPct)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_hum",
+          .value = g_dhtHumPct,
+          .sensorType = "humidity",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = "DHT hum",
+        });
+      }
+    }
+
+    if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
+      batch.readings.push_back(NettempReading{
+        .sensorId = gpioDeviceId + "_batt",
+        .value = (float)g_vbatPct,
+        .sensorType = "battery",
+        .unit = "%",
+        .timestamp = ts,
+        .friendlyName = "battery",
+      });
+      if (g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = gpioDeviceId + "_vbat",
+          .value = g_vbatVolts,
+          .sensorType = "voltage",
+          .unit = "V",
+          .timestamp = ts,
+          .friendlyName = "vbat",
+        });
+      }
+    }
+
+    if (g_cfg.soilEnabled && g_soilRaw >= 0) {
+      const String base = gpioDeviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
+      if (g_cfg.soilSendRaw) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_raw",
+          .value = (float)g_soilRaw,
+          .sensorType = "soil_raw",
+          .unit = "",
+          .timestamp = ts,
+          .friendlyName = "soil raw",
+        });
+      }
+      if (g_cfg.soilSendPct && !isnan(g_soilPct)) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_pct",
+          .value = g_soilPct,
+          .sensorType = "soil_moisture",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = "soil",
+        });
+      }
+    }
+
+    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+      const String base = gpioDeviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
+      batch.readings.push_back(NettempReading{
+        .sensorId = base + "_cm",
+        .value = g_hcsr04Cm,
+        .sensorType = "distance",
+        .unit = "cm",
+        .timestamp = ts,
+        .friendlyName = "distance",
+      });
+    }
+
+    if (!batch.readings.empty()) {
+      nettempPostBatch(g_tlsClient, batch);
+      anySent = true;
+    }
+  }
+
+  if (anySent) g_lastLocalServerSendMs = millis();
 #endif
 }
 
@@ -2936,6 +3242,7 @@ void loop() {
   // Sending
   tickSendMqtt();
   tickSendServer();
+  tickSendLocalServer();
 #if NETTEMP_ENABLE_SERVER
   tickSendWebhook();
 #endif

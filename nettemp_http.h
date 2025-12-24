@@ -21,8 +21,10 @@ struct NettempReading {
 
 struct NettempBatch {
   String baseUrl;  // e.g. https://api.nettemp.pl
+  String endpoint; // optional full URL (overrides baseUrl + /api/v1/data)
   String apiKey;   // ntk_...
   String deviceId; // device_id in Nettemp
+  bool requireApiKey = true;
   std::vector<NettempReading> readings;
 };
 

@@ -67,11 +67,11 @@ static String buildPayload(const NettempBatch& batch) {
 } // namespace
 
 bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
-  if (!batch.baseUrl.length()) {
+  if (!batch.endpoint.length() && !batch.baseUrl.length()) {
     Serial.println("Server send failed: baseUrl not configured");
     return false;
   }
-  if (!batch.apiKey.length()) {
+  if (batch.requireApiKey && !batch.apiKey.length()) {
     Serial.println("Server send failed: apiKey not configured");
     return false;
   }
@@ -84,7 +84,7 @@ bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
     return true;
   }
 
-  const String endpoint = joinUrl(batch.baseUrl, "/api/v1/data");
+  const String endpoint = batch.endpoint.length() ? batch.endpoint : joinUrl(batch.baseUrl, "/api/v1/data");
   const String body = buildPayload(batch);
 
   Serial.printf("Sending %u reading(s) to server: %s\n", (unsigned)batch.readings.size(), endpoint.c_str());
@@ -108,7 +108,9 @@ bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
   }
 
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", String("Bearer ") + batch.apiKey);
+  if (batch.apiKey.length()) {
+    http.addHeader("Authorization", String("Bearer ") + batch.apiKey);
+  }
 
   const int code = http.POST((uint8_t*)body.c_str(), body.length());
   http.end();

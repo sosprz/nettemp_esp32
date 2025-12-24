@@ -123,6 +123,10 @@ static void headlessPrintHelp() {
   Serial.println("  mqtt pass <pass>");
   Serial.println("  mqtt interval <seconds>");
   Serial.println("  mqtt set <host> <port> <interval_s>  (shortcut)");
+  Serial.println("  mqtt json [fields...]     (BLE->MQTT fields; e.g. tempc hum batt rssi)");
+#if NETTEMP_ENABLE_I2C
+  Serial.println("  mqtt json i2c [fields...] (I2C->MQTT fields; e.g. tempc press_hpa)");
+#endif
   Serial.println("  server on|off");
   Serial.println("  server url <baseUrl>");
   Serial.println("  server key <ntk_token>");
@@ -131,10 +135,57 @@ static void headlessPrintHelp() {
 #if NETTEMP_ENABLE_I2C
   Serial.println("  server json i2c [fields...] (I2C->Cloud fields; e.g. tempc press_hpa)");
 #endif
+  Serial.println("  local json [fields...]    (BLE->Local fields; e.g. tempc hum batt rssi)");
+#if NETTEMP_ENABLE_I2C
+  Serial.println("  local json i2c [fields...] (I2C->Local fields; e.g. tempc press_hpa)");
+#endif
+  Serial.println("  webhook json [fields...]  (BLE->Webhook fields; e.g. tempc hum batt rssi)");
+#if NETTEMP_ENABLE_I2C
+  Serial.println("  webhook json i2c [fields...] (I2C->Webhook fields; e.g. tempc press_hpa)");
+#endif
   Serial.println("  server set <baseUrl> <ntk_token> <interval_s>  (shortcut)");
   Serial.println("  send now");
   Serial.println("  reset                    (factory reset + reboot)");
 }
+
+static String bleFieldsEnabledStringFor(uint32_t mask) {
+  String out;
+  auto add = [&](const char* s) {
+    if (out.length()) out += " ";
+    out += s;
+  };
+  if (mask & SRV_BLE_TEMPC) add("tempc");
+  if (mask & SRV_BLE_TEMPF) add("tempf");
+  if (mask & SRV_BLE_HUM) add("hum");
+  if (mask & SRV_BLE_BATT) add("batt");
+  if (mask & SRV_BLE_VOLT) add("volt");
+  if (mask & SRV_BLE_RSSI) add("rssi");
+  if (!out.length()) out = "(none)";
+  return out;
+}
+
+static String bleFieldsAvailableStringFor() {
+  return String("tempc tempf hum batt volt rssi");
+}
+
+#if NETTEMP_ENABLE_I2C
+static String i2cFieldsEnabledStringFor(uint32_t mask) {
+  String out;
+  auto add = [&](const char* s) {
+    if (out.length()) out += " ";
+    out += s;
+  };
+  if (mask & SRV_I2C_TEMPC) add("tempc");
+  if (mask & SRV_I2C_HUM) add("hum");
+  if (mask & SRV_I2C_PRESS) add("press_hpa");
+  if (!out.length()) out = "(none)";
+  return out;
+}
+
+static String i2cFieldsAvailableStringFor() {
+  return String("tempc hum press_hpa");
+}
+#endif
 
 static String nextToken(const String& line, int& pos) {
   const int n = (int)line.length();
@@ -810,7 +861,89 @@ static void headlessHandleCommand(String line) {
       Serial.println("OK");
       return;
     }
-    Serial.println("Usage: mqtt on|off | mqtt host <host> | mqtt port <port> | mqtt user <user> | mqtt pass <pass> | mqtt interval <seconds> | mqtt set <host> <port> <interval_s>");
+    if (sub == "json") {
+      const int posBefore = pos;
+      const String maybeI2c = nextToken(line, pos);
+      const bool isI2c = (maybeI2c == "i2c");
+      if (!isI2c) pos = posBefore;
+
+      uint32_t mask = 0;
+      bool sawAny = false;
+      while (true) {
+        const String t = nextToken(line, pos);
+        if (!t.length()) break;
+        sawAny = true;
+        if (!isI2c) {
+          if (t == "tempc") mask |= SRV_BLE_TEMPC;
+          else if (t == "tempf") mask |= SRV_BLE_TEMPF;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_BLE_HUM;
+          else if (t == "batt" || t == "battery") mask |= SRV_BLE_BATT;
+          else if (t == "volt" || t == "voltage") mask |= SRV_BLE_VOLT;
+          else if (t == "rssi" || t == "signal") mask |= SRV_BLE_RSSI;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+            return;
+          }
+        } else {
+#if NETTEMP_ENABLE_I2C
+          if (t == "tempc") mask |= SRV_I2C_TEMPC;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_I2C_HUM;
+          else if (t == "press" || t == "pressure" || t == "press_hpa") mask |= SRV_I2C_PRESS;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+            return;
+          }
+#else
+          (void)mask;
+          Serial.println("I2C disabled at compile time.");
+          return;
+#endif
+        }
+      }
+
+      if (!sawAny) {
+        if (!isI2c) {
+          Serial.printf("mqtt json %s (available %s)\n",
+                        bleFieldsEnabledStringFor(g_mqttBleFields).c_str(),
+                        bleFieldsAvailableStringFor().c_str());
+        } else {
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("mqtt json i2c %s (available %s)\n",
+                        i2cFieldsEnabledStringFor(g_mqttI2cFields).c_str(),
+                        i2cFieldsAvailableStringFor().c_str());
+#else
+          Serial.println("I2C disabled at compile time.");
+#endif
+        }
+        return;
+      }
+
+      if (mask == 0) {
+        if (!isI2c) {
+          Serial.println("Usage: mqtt json <fields...>  (at least one field)");
+          Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+        } else {
+          Serial.println("Usage: mqtt json i2c <fields...>  (at least one field)");
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+#endif
+        }
+        return;
+      }
+
+#if NETTEMP_ENABLE_I2C
+      if (isI2c) g_mqttI2cFields = mask;
+      else g_mqttBleFields = mask;
+#else
+      g_mqttBleFields = mask;
+#endif
+      prefsSave();
+      Serial.println("OK");
+      return;
+    }
+    Serial.println("Usage: mqtt on|off | mqtt host <host> | mqtt port <port> | mqtt user <user> | mqtt pass <pass> | mqtt interval <seconds> | mqtt set <host> <port> <interval_s> | mqtt json [fields...] | mqtt json i2c [fields...]");
     return;
 #endif
   }
@@ -1095,6 +1228,180 @@ static void headlessHandleCommand(String line) {
       "server json [fields...] | server json i2c [fields...] | server set <baseUrl> <ntk_token> <interval_s>");
     return;
 #endif
+  }
+  if (cmd == "local") {
+    const String sub = nextToken(line, pos);
+    if (sub == "json") {
+      const int posBefore = pos;
+      const String maybeI2c = nextToken(line, pos);
+      const bool isI2c = (maybeI2c == "i2c");
+      if (!isI2c) pos = posBefore;
+
+      uint32_t mask = 0;
+      bool sawAny = false;
+      while (true) {
+        const String t = nextToken(line, pos);
+        if (!t.length()) break;
+        sawAny = true;
+        if (!isI2c) {
+          if (t == "tempc") mask |= SRV_BLE_TEMPC;
+          else if (t == "tempf") mask |= SRV_BLE_TEMPF;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_BLE_HUM;
+          else if (t == "batt" || t == "battery") mask |= SRV_BLE_BATT;
+          else if (t == "volt" || t == "voltage") mask |= SRV_BLE_VOLT;
+          else if (t == "rssi" || t == "signal") mask |= SRV_BLE_RSSI;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+            return;
+          }
+        } else {
+#if NETTEMP_ENABLE_I2C
+          if (t == "tempc") mask |= SRV_I2C_TEMPC;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_I2C_HUM;
+          else if (t == "press" || t == "pressure" || t == "press_hpa") mask |= SRV_I2C_PRESS;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+            return;
+          }
+#else
+          (void)mask;
+          Serial.println("I2C disabled at compile time.");
+          return;
+#endif
+        }
+      }
+
+      if (!sawAny) {
+        if (!isI2c) {
+          Serial.printf("local json %s (available %s)\n",
+                        bleFieldsEnabledStringFor(g_localBleFields).c_str(),
+                        bleFieldsAvailableStringFor().c_str());
+        } else {
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("local json i2c %s (available %s)\n",
+                        i2cFieldsEnabledStringFor(g_localI2cFields).c_str(),
+                        i2cFieldsAvailableStringFor().c_str());
+#else
+          Serial.println("I2C disabled at compile time.");
+#endif
+        }
+        return;
+      }
+
+      if (mask == 0) {
+        if (!isI2c) {
+          Serial.println("Usage: local json <fields...>  (at least one field)");
+          Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+        } else {
+          Serial.println("Usage: local json i2c <fields...>  (at least one field)");
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+#endif
+        }
+        return;
+      }
+
+#if NETTEMP_ENABLE_I2C
+      if (isI2c) g_localI2cFields = mask;
+      else g_localBleFields = mask;
+#else
+      g_localBleFields = mask;
+#endif
+      prefsSave();
+      Serial.println("OK");
+      return;
+    }
+    Serial.println("Usage: local json [fields...] | local json i2c [fields...]");
+    return;
+  }
+  if (cmd == "webhook") {
+    const String sub = nextToken(line, pos);
+    if (sub == "json") {
+      const int posBefore = pos;
+      const String maybeI2c = nextToken(line, pos);
+      const bool isI2c = (maybeI2c == "i2c");
+      if (!isI2c) pos = posBefore;
+
+      uint32_t mask = 0;
+      bool sawAny = false;
+      while (true) {
+        const String t = nextToken(line, pos);
+        if (!t.length()) break;
+        sawAny = true;
+        if (!isI2c) {
+          if (t == "tempc") mask |= SRV_BLE_TEMPC;
+          else if (t == "tempf") mask |= SRV_BLE_TEMPF;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_BLE_HUM;
+          else if (t == "batt" || t == "battery") mask |= SRV_BLE_BATT;
+          else if (t == "volt" || t == "voltage") mask |= SRV_BLE_VOLT;
+          else if (t == "rssi" || t == "signal") mask |= SRV_BLE_RSSI;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+            return;
+          }
+        } else {
+#if NETTEMP_ENABLE_I2C
+          if (t == "tempc") mask |= SRV_I2C_TEMPC;
+          else if (t == "hum" || t == "humid" || t == "humidity") mask |= SRV_I2C_HUM;
+          else if (t == "press" || t == "pressure" || t == "press_hpa") mask |= SRV_I2C_PRESS;
+          else {
+            Serial.printf("Unknown field: %s\n", t.c_str());
+            Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+            return;
+          }
+#else
+          (void)mask;
+          Serial.println("I2C disabled at compile time.");
+          return;
+#endif
+        }
+      }
+
+      if (!sawAny) {
+        if (!isI2c) {
+          Serial.printf("webhook json %s (available %s)\n",
+                        bleFieldsEnabledStringFor(g_webhookBleFields).c_str(),
+                        bleFieldsAvailableStringFor().c_str());
+        } else {
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("webhook json i2c %s (available %s)\n",
+                        i2cFieldsEnabledStringFor(g_webhookI2cFields).c_str(),
+                        i2cFieldsAvailableStringFor().c_str());
+#else
+          Serial.println("I2C disabled at compile time.");
+#endif
+        }
+        return;
+      }
+
+      if (mask == 0) {
+        if (!isI2c) {
+          Serial.println("Usage: webhook json <fields...>  (at least one field)");
+          Serial.printf("Available: %s\n", bleFieldsAvailableStringFor().c_str());
+        } else {
+          Serial.println("Usage: webhook json i2c <fields...>  (at least one field)");
+#if NETTEMP_ENABLE_I2C
+          Serial.printf("Available: %s\n", i2cFieldsAvailableStringFor().c_str());
+#endif
+        }
+        return;
+      }
+
+#if NETTEMP_ENABLE_I2C
+      if (isI2c) g_webhookI2cFields = mask;
+      else g_webhookBleFields = mask;
+#else
+      g_webhookBleFields = mask;
+#endif
+      prefsSave();
+      Serial.println("OK");
+      return;
+    }
+    Serial.println("Usage: webhook json [fields...] | webhook json i2c [fields...]");
+    return;
   }
   if (cmd == "send") {
     const String sub = nextToken(line, pos);

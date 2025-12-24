@@ -58,18 +58,27 @@ struct AppSettings {
   String serverBaseUrl = "https://api.nettemp.pl";
   String serverApiKey; // ntk_...
   uint32_t serverIntervalMs = 60'000;
+  bool localServerEnabled = false;
+  String localServerUrl = "http://192.168.1.10/api/v1/data";
+  String localServerApiKey;
+  uint32_t localServerIntervalMs = 60'000;
   bool webhookEnabled = false;
   String webhookUrl;
   uint32_t webhookIntervalMs = 60'000;
   bool bleSendServer = true;
   bool bleSendMqtt = true;
   bool bleSendWebhook = true;
+  bool bleSendLocalServer = true;
   bool i2cSendServer = true;
   bool i2cSendMqtt = true;
   bool i2cSendWebhook = true;
+  bool i2cSendLocalServer = true;
   bool gpioSendServer = true;
   bool gpioSendMqtt = true;
   bool gpioSendWebhook = true;
+  bool gpioSendLocalServer = true;
+  bool localSoilSendRaw = true;
+  bool localSoilSendPct = true;
 
   // GPIO sensors
   bool dsEnabled = false;
@@ -168,6 +177,7 @@ constexpr uint32_t SRV_BLE_RSSI = 1u << 5;
 uint32_t g_srvBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 uint32_t g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 uint32_t g_webhookBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+uint32_t g_localBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 
 // I2C → Server (Cloud) field selection.
 // Defaults: tempc + hum + press_hpa
@@ -177,6 +187,7 @@ constexpr uint32_t SRV_I2C_PRESS = 1u << 2;
 uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+uint32_t g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 
 std::vector<SensorRow> g_sensors;
 bool g_activeScan = false;
@@ -248,6 +259,7 @@ bool g_powerCycleDoneThisBoot = false;
 
 uint32_t g_lastUiMs = 0;
 uint32_t g_lastServerSendMs = 0;
+uint32_t g_lastLocalServerSendMs = 0;
 uint32_t g_lastWebhookSendMs = 0;
 uint32_t g_lastSerialRxMs = 0;
 bool g_i2cBegun = false;
@@ -288,6 +300,7 @@ static String serverBleFieldsAvailableString();
 static void tickSendMqtt();
 static void tickSendServer();
 #if NETTEMP_ENABLE_SERVER
+static void tickSendLocalServer();
 static void tickSendWebhook();
 #endif
 static void mqttEnsureConnected();
@@ -450,18 +463,25 @@ static void prefsLoad() {
   g_cfg.serverBaseUrl = g_prefs.getString("srvUrl", g_cfg.serverBaseUrl);
   g_cfg.serverApiKey = g_prefs.getString("srvKey", "");
   g_cfg.serverIntervalMs = g_prefs.getUInt("srvInt", g_cfg.serverIntervalMs);
+  g_cfg.localServerEnabled = g_prefs.getBool("lsEn", g_cfg.localServerEnabled);
+  g_cfg.localServerUrl = g_prefs.getString("lsUrl", g_cfg.localServerUrl);
+  g_cfg.localServerApiKey = g_prefs.getString("lsKey", g_cfg.localServerApiKey);
+  g_cfg.localServerIntervalMs = g_prefs.getUInt("lsInt", g_cfg.localServerIntervalMs);
   g_cfg.webhookEnabled = g_prefs.getBool("whEn", g_cfg.webhookEnabled);
   g_cfg.webhookUrl = g_prefs.getString("whUrl", g_cfg.webhookUrl);
   g_cfg.webhookIntervalMs = g_prefs.getUInt("whInt", g_cfg.webhookIntervalMs);
   g_cfg.bleSendServer = g_prefs.getBool("bleSrv", g_cfg.bleSendServer);
   g_cfg.bleSendMqtt = g_prefs.getBool("bleMq", g_cfg.bleSendMqtt);
   g_cfg.bleSendWebhook = g_prefs.getBool("bleWh", g_cfg.bleSendWebhook);
+  g_cfg.bleSendLocalServer = g_prefs.getBool("bleLs", g_cfg.bleSendLocalServer);
   g_cfg.i2cSendServer = g_prefs.getBool("i2cSrv", g_cfg.i2cSendServer);
   g_cfg.i2cSendMqtt = g_prefs.getBool("i2cMq", g_cfg.i2cSendMqtt);
   g_cfg.i2cSendWebhook = g_prefs.getBool("i2cWh", g_cfg.i2cSendWebhook);
+  g_cfg.i2cSendLocalServer = g_prefs.getBool("i2cLs", g_cfg.i2cSendLocalServer);
   g_cfg.gpioSendServer = g_prefs.getBool("gpioSrv", g_cfg.gpioSendServer);
   g_cfg.gpioSendMqtt = g_prefs.getBool("gpioMq", g_cfg.gpioSendMqtt);
   g_cfg.gpioSendWebhook = g_prefs.getBool("gpioWh", g_cfg.gpioSendWebhook);
+  g_cfg.gpioSendLocalServer = g_prefs.getBool("gpioLs", g_cfg.gpioSendLocalServer);
   if (g_cfg.webhookIntervalMs < 5000) g_cfg.webhookIntervalMs = 5000;
   if (g_cfg.webhookIntervalMs > 3600000) g_cfg.webhookIntervalMs = 3600000;
   g_srvBleFields = g_prefs.getUInt("srvBleF", g_srvBleFields);
@@ -476,6 +496,10 @@ static void prefsLoad() {
   if (g_webhookBleFields == 0) g_webhookBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_webhookI2cFields = g_prefs.getUInt("whI2cF", g_webhookI2cFields);
   if (g_webhookI2cFields == 0) g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  g_localBleFields = g_prefs.getUInt("lsBleF", g_localBleFields);
+  if (g_localBleFields == 0) g_localBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
+  g_localI2cFields = g_prefs.getUInt("lsI2cF", g_localI2cFields);
+  if (g_localI2cFields == 0) g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
   bleManualDecode(g_prefs.getString("bleMan", ""));
 
   g_cfg.dsEnabled = g_prefs.getBool("dsEn", g_cfg.dsEnabled);
@@ -491,6 +515,8 @@ static void prefsLoad() {
   g_cfg.soilSendPct = g_prefs.getBool("soilPct", g_cfg.soilSendPct);
   g_cfg.mqttSoilSendRaw = g_prefs.getBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
   g_cfg.mqttSoilSendPct = g_prefs.getBool("mqSoilPct", g_cfg.mqttSoilSendPct);
+  g_cfg.localSoilSendRaw = g_prefs.getBool("lsSoilRaw", g_cfg.localSoilSendRaw);
+  g_cfg.localSoilSendPct = g_prefs.getBool("lsSoilPct", g_cfg.localSoilSendPct);
   g_cfg.hcsr04Enabled = g_prefs.getBool("hcEn", g_cfg.hcsr04Enabled);
   g_cfg.hcsr04TrigPin = (int)g_prefs.getInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_cfg.hcsr04EchoPin = (int)g_prefs.getInt("hcEcho", g_cfg.hcsr04EchoPin);
@@ -648,24 +674,33 @@ static void prefsSave() {
   g_prefs.putString("srvUrl", g_cfg.serverBaseUrl);
   g_prefs.putString("srvKey", g_cfg.serverApiKey);
   g_prefs.putUInt("srvInt", g_cfg.serverIntervalMs);
+  g_prefs.putBool("lsEn", g_cfg.localServerEnabled);
+  g_prefs.putString("lsUrl", g_cfg.localServerUrl);
+  g_prefs.putString("lsKey", g_cfg.localServerApiKey);
+  g_prefs.putUInt("lsInt", g_cfg.localServerIntervalMs);
   g_prefs.putBool("whEn", g_cfg.webhookEnabled);
   g_prefs.putString("whUrl", g_cfg.webhookUrl);
   g_prefs.putUInt("whInt", g_cfg.webhookIntervalMs);
   g_prefs.putBool("bleSrv", g_cfg.bleSendServer);
   g_prefs.putBool("bleMq", g_cfg.bleSendMqtt);
   g_prefs.putBool("bleWh", g_cfg.bleSendWebhook);
+  g_prefs.putBool("bleLs", g_cfg.bleSendLocalServer);
   g_prefs.putBool("i2cSrv", g_cfg.i2cSendServer);
   g_prefs.putBool("i2cMq", g_cfg.i2cSendMqtt);
   g_prefs.putBool("i2cWh", g_cfg.i2cSendWebhook);
+  g_prefs.putBool("i2cLs", g_cfg.i2cSendLocalServer);
   g_prefs.putBool("gpioSrv", g_cfg.gpioSendServer);
   g_prefs.putBool("gpioMq", g_cfg.gpioSendMqtt);
   g_prefs.putBool("gpioWh", g_cfg.gpioSendWebhook);
+  g_prefs.putBool("gpioLs", g_cfg.gpioSendLocalServer);
   g_prefs.putUInt("srvBleF", g_srvBleFields);
   g_prefs.putUInt("srvI2cF", g_srvI2cFields);
   g_prefs.putUInt("mqBleF", g_mqttBleFields);
   g_prefs.putUInt("mqI2cF", g_mqttI2cFields);
   g_prefs.putUInt("whBleF", g_webhookBleFields);
   g_prefs.putUInt("whI2cF", g_webhookI2cFields);
+  g_prefs.putUInt("lsBleF", g_localBleFields);
+  g_prefs.putUInt("lsI2cF", g_localI2cFields);
   g_prefs.putString("bleMan", bleManualEncode());
 #if NETTEMP_ENABLE_I2C
   if (!g_i2cSensors.empty()) {
@@ -686,6 +721,8 @@ static void prefsSave() {
   g_prefs.putBool("soilPct", g_cfg.soilSendPct);
   g_prefs.putBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
   g_prefs.putBool("mqSoilPct", g_cfg.mqttSoilSendPct);
+  g_prefs.putBool("lsSoilRaw", g_cfg.localSoilSendRaw);
+  g_prefs.putBool("lsSoilPct", g_cfg.localSoilSendPct);
   g_prefs.putBool("hcEn", g_cfg.hcsr04Enabled);
   g_prefs.putInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_prefs.putInt("hcEcho", g_cfg.hcsr04EchoPin);
