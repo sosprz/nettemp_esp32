@@ -252,9 +252,15 @@ static void appendI2cFieldCheckboxes(String& body, const char* prefix, uint32_t 
 }
 #endif
 
-static void appendSoilFieldCheckboxes(String& body, const char* prefix, bool raw, bool pct) {
-  appendCheckbox(body, String(prefix) + "raw", raw, "soil_raw");
-  appendCheckbox(body, String(prefix) + "pct", pct, "soil_pct");
+static void appendGpioFieldCheckboxes(String& body, const char* prefix, uint32_t mask) {
+  appendCheckbox(body, String(prefix) + "tempc", (mask & SRV_GPIO_TEMPC) != 0, "tempc");
+  appendCheckbox(body, String(prefix) + "tempf", (mask & SRV_GPIO_TEMPF) != 0, "tempf");
+  appendCheckbox(body, String(prefix) + "hum", (mask & SRV_GPIO_HUM) != 0, "hum");
+  appendCheckbox(body, String(prefix) + "batt", (mask & SRV_GPIO_BATT) != 0, "batt");
+  appendCheckbox(body, String(prefix) + "volt", (mask & SRV_GPIO_VOLT) != 0, "volt");
+  appendCheckbox(body, String(prefix) + "soil_raw", (mask & SRV_GPIO_SOIL_RAW) != 0, "soil_raw");
+  appendCheckbox(body, String(prefix) + "soil_pct", (mask & SRV_GPIO_SOIL_PCT) != 0, "soil_pct");
+  appendCheckbox(body, String(prefix) + "cm", (mask & SRV_GPIO_DIST_CM) != 0, "cm");
 }
 
 static uint32_t parseBleMask(const char* prefix, uint32_t defaultMask) {
@@ -280,9 +286,18 @@ static uint32_t parseI2cMask(const char* prefix, uint32_t defaultMask) {
 }
 #endif
 
-static void parseSoilFlags(const char* prefix, bool& raw, bool& pct) {
-  raw = g_webServer.hasArg(String(prefix) + "raw");
-  pct = g_webServer.hasArg(String(prefix) + "pct");
+static uint32_t parseGpioMask(const char* prefix, uint32_t defaultMask) {
+  uint32_t mask = 0;
+  if (g_webServer.hasArg(String(prefix) + "tempc")) mask |= SRV_GPIO_TEMPC;
+  if (g_webServer.hasArg(String(prefix) + "tempf")) mask |= SRV_GPIO_TEMPF;
+  if (g_webServer.hasArg(String(prefix) + "hum")) mask |= SRV_GPIO_HUM;
+  if (g_webServer.hasArg(String(prefix) + "batt")) mask |= SRV_GPIO_BATT;
+  if (g_webServer.hasArg(String(prefix) + "volt")) mask |= SRV_GPIO_VOLT;
+  if (g_webServer.hasArg(String(prefix) + "soil_raw")) mask |= SRV_GPIO_SOIL_RAW;
+  if (g_webServer.hasArg(String(prefix) + "soil_pct")) mask |= SRV_GPIO_SOIL_PCT;
+  if (g_webServer.hasArg(String(prefix) + "cm")) mask |= SRV_GPIO_DIST_CM;
+  if (mask == 0) mask = defaultMask;
+  return mask;
 }
 
 static bool webRequireAuth();
@@ -597,8 +612,8 @@ static void configHandleSaveMqtt() {
   g_cfg.bleSendMqtt = g_webServer.hasArg("mqttBle");
   g_cfg.gpioSendMqtt = g_webServer.hasArg("mqttGpio");
   g_cfg.i2cSendMqtt = g_webServer.hasArg("mqttI2c");
-  parseSoilFlags("m_f_soil_", g_cfg.mqttSoilSendRaw, g_cfg.mqttSoilSendPct);
   g_mqttBleFields = parseBleMask("m_f_", (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT));
+  g_mqttGpioFields = parseGpioMask("m_f_gpio_", SRV_GPIO_DEFAULT);
 
 #if NETTEMP_ENABLE_I2C
   g_mqttI2cFields = parseI2cMask("m_f_i2c_", (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS));
@@ -623,8 +638,8 @@ static void configHandleSaveServer() {
   g_cfg.bleSendServer = g_webServer.hasArg("srvBle");
   g_cfg.gpioSendServer = g_webServer.hasArg("srvGpio");
   g_cfg.i2cSendServer = g_webServer.hasArg("srvI2c");
-  parseSoilFlags("f_soil_", g_cfg.soilSendRaw, g_cfg.soilSendPct);
   g_srvBleFields = parseBleMask("f_", (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT));
+  g_srvGpioFields = parseGpioMask("f_gpio_", SRV_GPIO_DEFAULT);
 
 #if NETTEMP_ENABLE_I2C
   g_srvI2cFields = parseI2cMask("f_i2c_", (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS));
@@ -651,12 +666,11 @@ static void configHandleSaveLocalServer() {
   g_cfg.i2cSendLocalServer = g_webServer.hasArg("lsI2c");
 
   g_localBleFields = parseBleMask("ls_f_", (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT));
+  g_localGpioFields = parseGpioMask("ls_f_gpio_", SRV_GPIO_DEFAULT_LOCAL);
 
 #if NETTEMP_ENABLE_I2C
   g_localI2cFields = parseI2cMask("ls_f_i2c_", (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS));
 #endif
-
-  parseSoilFlags("ls_f_soil_", g_cfg.localSoilSendRaw, g_cfg.localSoilSendPct);
 
   prefsSave();
   g_webServer.sendHeader("Location", "/", true);
@@ -686,6 +700,7 @@ static void configHandleSaveWebhook() {
 #if NETTEMP_ENABLE_I2C
   g_webhookI2cFields = parseI2cMask("w_f_i2c_", (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS));
 #endif
+  g_webhookGpioFields = parseGpioMask("w_f_gpio_", SRV_GPIO_DEFAULT);
   g_cfg.bleSendWebhook = g_webServer.hasArg("whBle");
   g_cfg.gpioSendWebhook = g_webServer.hasArg("whGpio");
   g_cfg.i2cSendWebhook = g_webServer.hasArg("whI2c");

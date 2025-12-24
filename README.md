@@ -29,6 +29,7 @@ If you see NimBLE compile errors, make sure you installed **NimBLE-Arduino** (no
   - URL: `http://192.168.4.1/`
 - After WiFi connects: open `http://<device-ip>/` (Basic Auth) to configure BLE/I2C/MQTT/Server.
 - On device: `BtnA/BtnB` move, `Enter` select, `Esc` back.
+- Channels JSON fields are selectable per transport for BLE/I2C/GPIO (GPIO includes `tempc`, `tempf`, `hum`, `batt`, `volt`, `soil_raw`, `soil_pct`, `cm`).
 
 ### UI build selection
 - Cardputer UI auto-enables when Cardputer board is detected.

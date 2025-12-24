@@ -1378,7 +1378,7 @@ static void tickSendMqtt() {
       return name.length() ? name : String(fallback);
     };
     for (auto& s : g_sensors) {
-      if (!s.selected) continue;
+      if (!bleIsSelected(s)) continue;
       if (isnan(s.temperatureC) && isnan(s.humidityPct) && s.batteryPct < 0 && s.voltageMv < 0 && s.rssi == 0) continue;
 
       const uint32_t now = millis();
@@ -1439,6 +1439,7 @@ static void tickSendMqtt() {
 #endif
 
       if (g_cfg.gpioSendMqtt) {
+        auto tempfFromC = [](float tempc) { return (tempc * 9.0f / 5.0f) + 32.0f; };
         if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
           for (size_t i = 0; i < g_dsRoms.size(); i++) {
             if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
@@ -1452,32 +1453,53 @@ static void tickSendMqtt() {
             if (!selected) continue;
             const String dsId = dsRomLinuxIdSimple(g_dsRoms[i]);
             const String sensorId = dev + "-" + dsId;
-            publishReadingFor(dev, sensorId, "temperature", "DS18B20 temp", String(g_dsTempsC[i], 2));
+            if (g_mqttGpioFields & SRV_GPIO_TEMPC) {
+              publishReadingFor(dev, sensorId, "temperature", "DS18B20 temp", String(g_dsTempsC[i], 2));
+            }
+            if (g_mqttGpioFields & SRV_GPIO_TEMPF) {
+              const float tempf = tempfFromC(g_dsTempsC[i]);
+              publishReadingFor(dev, sensorId + "_tempf", "temperature_f", "DS18B20 tempf", String(tempf, 2));
+            }
           }
         }
 
         if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
           const String base = dev + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
-          publishReading(base + "_tempc", "temperature", "DHT temp", String(g_dhtTempC, 2));
-          if (!isnan(g_dhtHumPct)) publishReading(base + "_hum", "humidity", "DHT hum", String(g_dhtHumPct, 1));
+          if (g_mqttGpioFields & SRV_GPIO_TEMPC) {
+            publishReading(base + "_tempc", "temperature", "DHT temp", String(g_dhtTempC, 2));
+          }
+          if (g_mqttGpioFields & SRV_GPIO_TEMPF) {
+            const float tempf = tempfFromC(g_dhtTempC);
+            publishReading(base + "_tempf", "temperature_f", "DHT tempf", String(tempf, 2));
+          }
+          if ((g_mqttGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
+            publishReading(base + "_hum", "humidity", "DHT hum", String(g_dhtHumPct, 1));
+          }
         }
 
         if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
-          publishReading(dev + "-batt", "battery", "battery", String(g_vbatPct));
+          if (g_mqttGpioFields & SRV_GPIO_BATT) {
+            publishReading(dev + "-batt", "battery", "battery", String(g_vbatPct));
+          }
+          if ((g_mqttGpioFields & SRV_GPIO_VOLT) && g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
+            publishReading(dev + "-vbat", "voltage", "vbat", String(g_vbatVolts, 3));
+          }
         }
 
         if (g_cfg.soilEnabled && g_soilRaw >= 0) {
           const String base = dev + "-soil_adc" + String(g_cfg.soilAdcPin);
-          if (g_cfg.mqttSoilSendRaw) {
+          if (g_mqttGpioFields & SRV_GPIO_SOIL_RAW) {
             publishReading(base + "_raw", "soil_raw", "soil raw", String(g_soilRaw));
           }
-          if (g_cfg.mqttSoilSendPct && !isnan(g_soilPct)) {
+          if ((g_mqttGpioFields & SRV_GPIO_SOIL_PCT) && !isnan(g_soilPct)) {
             publishReading(base + "_pct", "soil_moisture", "soil", String(g_soilPct, 1));
           }
         }
         if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
           const String base = dev + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-          publishReading(base + "_cm", "distance", "distance", String(g_hcsr04Cm, 1));
+          if (g_mqttGpioFields & SRV_GPIO_DIST_CM) {
+            publishReading(base + "_cm", "distance", "distance", String(g_hcsr04Cm, 1));
+          }
         }
       }
 
@@ -1518,7 +1540,7 @@ static void tickSendServer() {
       return name.length() ? name : String(fallback);
     };
     for (const auto& s : g_sensors) {
-      if (!s.selected) continue;
+      if (!bleIsSelected(s)) continue;
       const String macNoColons = macNoColonsUpper(s.mac);
       const String base = bleDeviceId + "-ble_" + macNoColons;
 
@@ -1575,6 +1597,7 @@ static void tickSendServer() {
     batch.deviceId = gpioDeviceId;
     batch.apiKey = g_cfg.serverApiKey;
     batch.baseUrl = g_cfg.serverBaseUrl;
+    auto tempfFromC = [](float tempc) { return (tempc * 9.0f / 5.0f) + 32.0f; };
 
     if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
       for (size_t i = 0; i < g_dsRoms.size(); i++) {
@@ -1593,30 +1616,58 @@ static void tickSendServer() {
         dsBatch.deviceId = gpioDeviceId;
         dsBatch.apiKey = g_cfg.serverApiKey;
         dsBatch.baseUrl = g_cfg.serverBaseUrl;
-        dsBatch.readings.push_back(NettempReading{
-          .sensorId = sensorId,
-          .value = g_dsTempsC[i],
-          .sensorType = "temperature",
-          .unit = "°C",
-          .timestamp = ts,
-          .friendlyName = "DS18B20 temp",
-        });
-        nettempPostBatch(g_tlsClient, dsBatch);
-        anySent = true;
+        if (g_srvGpioFields & SRV_GPIO_TEMPC) {
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId,
+            .value = g_dsTempsC[i],
+            .sensorType = "temperature",
+            .unit = "°C",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 temp",
+          });
+        }
+        if (g_srvGpioFields & SRV_GPIO_TEMPF) {
+          const float tempf = tempfFromC(g_dsTempsC[i]);
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId + "_tempf",
+            .value = tempf,
+            .sensorType = "temperature_f",
+            .unit = "°F",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 tempf",
+          });
+        }
+        if (!dsBatch.readings.empty()) {
+          nettempPostBatch(g_tlsClient, dsBatch);
+          anySent = true;
+        }
       }
     }
 
     if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
       const String base = gpioDeviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_temp",
-        .value = g_dhtTempC,
-        .sensorType = "temperature",
-        .unit = "°C",
-        .timestamp = ts,
-        .friendlyName = "DHT temp",
-      });
-      if (!isnan(g_dhtHumPct)) {
+      if (g_srvGpioFields & SRV_GPIO_TEMPC) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = g_dhtTempC,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = "DHT temp",
+        });
+      }
+      if (g_srvGpioFields & SRV_GPIO_TEMPF) {
+        const float tempf = tempfFromC(g_dhtTempC);
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_tempf",
+          .value = tempf,
+          .sensorType = "temperature_f",
+          .unit = "°F",
+          .timestamp = ts,
+          .friendlyName = "DHT tempf",
+        });
+      }
+      if ((g_srvGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_hum",
           .value = g_dhtHumPct,
@@ -1629,15 +1680,17 @@ static void tickSendServer() {
     }
 
     if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = gpioDeviceId + "_batt",
-        .value = (float)g_vbatPct,
-        .sensorType = "battery",
-        .unit = "%",
-        .timestamp = ts,
-        .friendlyName = "battery",
-      });
-      if (g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
+      if (g_srvGpioFields & SRV_GPIO_BATT) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = gpioDeviceId + "_batt",
+          .value = (float)g_vbatPct,
+          .sensorType = "battery",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = "battery",
+        });
+      }
+      if ((g_srvGpioFields & SRV_GPIO_VOLT) && g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
         batch.readings.push_back(NettempReading{
           .sensorId = gpioDeviceId + "_vbat",
           .value = g_vbatVolts,
@@ -1651,7 +1704,7 @@ static void tickSendServer() {
 
     if (g_cfg.soilEnabled && g_soilRaw >= 0) {
       const String base = gpioDeviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
-      if (g_cfg.localSoilSendRaw) {
+      if (g_srvGpioFields & SRV_GPIO_SOIL_RAW) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_raw",
           .value = (float)g_soilRaw,
@@ -1661,7 +1714,7 @@ static void tickSendServer() {
           .friendlyName = "soil raw",
         });
       }
-      if (g_cfg.localSoilSendPct && !isnan(g_soilPct)) {
+      if ((g_srvGpioFields & SRV_GPIO_SOIL_PCT) && !isnan(g_soilPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_pct",
           .value = g_soilPct,
@@ -1674,14 +1727,16 @@ static void tickSendServer() {
     }
     if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
       const String base = gpioDeviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_cm",
-        .value = g_hcsr04Cm,
-        .sensorType = "distance",
-        .unit = "cm",
-        .timestamp = ts,
-        .friendlyName = "distance",
-      });
+      if (g_srvGpioFields & SRV_GPIO_DIST_CM) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_cm",
+          .value = g_hcsr04Cm,
+          .sensorType = "distance",
+          .unit = "cm",
+          .timestamp = ts,
+          .friendlyName = "distance",
+        });
+      }
     }
 
     if (!batch.readings.empty()) {
@@ -1724,7 +1779,7 @@ static void tickSendLocalServer() {
       return name.length() ? name : String(fallback);
     };
     for (const auto& s : g_sensors) {
-      if (!s.selected) continue;
+      if (!bleIsSelected(s)) continue;
       const String macNoColons = macNoColonsUpper(s.mac);
       const String base = bleDeviceId + "-ble_" + macNoColons;
 
@@ -1776,6 +1831,7 @@ static void tickSendLocalServer() {
 
   if (g_cfg.gpioSendLocalServer) {
     const String gpioDeviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
+    auto tempfFromC = [](float tempc) { return (tempc * 9.0f / 5.0f) + 32.0f; };
 
     if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
       for (size_t i = 0; i < g_dsRoms.size(); i++) {
@@ -1794,16 +1850,31 @@ static void tickSendLocalServer() {
         dsBatch.apiKey = g_cfg.localServerApiKey;
         dsBatch.requireApiKey = false;
         dsBatch.deviceId = gpioDeviceId;
-        dsBatch.readings.push_back(NettempReading{
-          .sensorId = sensorId,
-          .value = g_dsTempsC[i],
-          .sensorType = "temperature",
-          .unit = "°C",
-          .timestamp = ts,
-          .friendlyName = "DS18B20 temp",
-        });
-        nettempPostBatch(g_tlsClient, dsBatch);
-        anySent = true;
+        if (g_localGpioFields & SRV_GPIO_TEMPC) {
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId,
+            .value = g_dsTempsC[i],
+            .sensorType = "temperature",
+            .unit = "°C",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 temp",
+          });
+        }
+        if (g_localGpioFields & SRV_GPIO_TEMPF) {
+          const float tempf = tempfFromC(g_dsTempsC[i]);
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId + "_tempf",
+            .value = tempf,
+            .sensorType = "temperature_f",
+            .unit = "°F",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 tempf",
+          });
+        }
+        if (!dsBatch.readings.empty()) {
+          nettempPostBatch(g_tlsClient, dsBatch);
+          anySent = true;
+        }
       }
     }
 
@@ -1815,15 +1886,28 @@ static void tickSendLocalServer() {
 
     if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
       const String base = gpioDeviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_temp",
-        .value = g_dhtTempC,
-        .sensorType = "temperature",
-        .unit = "°C",
-        .timestamp = ts,
-        .friendlyName = "DHT temp",
-      });
-      if (!isnan(g_dhtHumPct)) {
+      if (g_localGpioFields & SRV_GPIO_TEMPC) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = g_dhtTempC,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = "DHT temp",
+        });
+      }
+      if (g_localGpioFields & SRV_GPIO_TEMPF) {
+        const float tempf = tempfFromC(g_dhtTempC);
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_tempf",
+          .value = tempf,
+          .sensorType = "temperature_f",
+          .unit = "°F",
+          .timestamp = ts,
+          .friendlyName = "DHT tempf",
+        });
+      }
+      if ((g_localGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_hum",
           .value = g_dhtHumPct,
@@ -1836,15 +1920,17 @@ static void tickSendLocalServer() {
     }
 
     if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = gpioDeviceId + "_batt",
-        .value = (float)g_vbatPct,
-        .sensorType = "battery",
-        .unit = "%",
-        .timestamp = ts,
-        .friendlyName = "battery",
-      });
-      if (g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
+      if (g_localGpioFields & SRV_GPIO_BATT) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = gpioDeviceId + "_batt",
+          .value = (float)g_vbatPct,
+          .sensorType = "battery",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = "battery",
+        });
+      }
+      if ((g_localGpioFields & SRV_GPIO_VOLT) && g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
         batch.readings.push_back(NettempReading{
           .sensorId = gpioDeviceId + "_vbat",
           .value = g_vbatVolts,
@@ -1858,7 +1944,7 @@ static void tickSendLocalServer() {
 
     if (g_cfg.soilEnabled && g_soilRaw >= 0) {
       const String base = gpioDeviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
-      if (g_cfg.soilSendRaw) {
+      if (g_localGpioFields & SRV_GPIO_SOIL_RAW) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_raw",
           .value = (float)g_soilRaw,
@@ -1868,7 +1954,7 @@ static void tickSendLocalServer() {
           .friendlyName = "soil raw",
         });
       }
-      if (g_cfg.soilSendPct && !isnan(g_soilPct)) {
+      if ((g_localGpioFields & SRV_GPIO_SOIL_PCT) && !isnan(g_soilPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_pct",
           .value = g_soilPct,
@@ -1882,14 +1968,16 @@ static void tickSendLocalServer() {
 
     if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
       const String base = gpioDeviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_cm",
-        .value = g_hcsr04Cm,
-        .sensorType = "distance",
-        .unit = "cm",
-        .timestamp = ts,
-        .friendlyName = "distance",
-      });
+      if (g_localGpioFields & SRV_GPIO_DIST_CM) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_cm",
+          .value = g_hcsr04Cm,
+          .sensorType = "distance",
+          .unit = "cm",
+          .timestamp = ts,
+          .friendlyName = "distance",
+        });
+      }
     }
 
     if (!batch.readings.empty()) {
@@ -1990,7 +2078,7 @@ static void tickSendWebhook() {
 
   if (g_cfg.bleSendWebhook) {
     for (const auto& s : g_sensors) {
-      if (!s.selected) continue;
+      if (!bleIsSelected(s)) continue;
     const String mac = s.mac;
     const String macNoColons = macNoColonsUpper(mac);
     NettempBatch batch;
@@ -2033,6 +2121,7 @@ static void tickSendWebhook() {
     const String deviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
     NettempBatch batch;
     batch.deviceId = deviceId;
+    auto tempfFromC = [](float tempc) { return (tempc * 9.0f / 5.0f) + 32.0f; };
     if (g_cfg.dsEnabled && !g_dsRoms.empty()) {
       for (size_t i = 0; i < g_dsRoms.size(); i++) {
         if (i >= g_dsTempsC.size() || isnan(g_dsTempsC[i])) continue;
@@ -2048,30 +2137,58 @@ static void tickSendWebhook() {
         const String sensorId = deviceId + "-" + dsId;
         NettempBatch dsBatch;
         dsBatch.deviceId = deviceId;
-        dsBatch.readings.push_back(NettempReading{
-          .sensorId = sensorId,
-          .value = g_dsTempsC[i],
-          .sensorType = "temperature",
-          .unit = "°C",
-          .timestamp = ts,
-          .friendlyName = "DS18B20 temp",
-        });
-        const String payload = buildWebhookPayload(dsBatch);
-        webhookPostJson(g_cfg.webhookUrl, payload);
-        anySent = true;
+        if (g_webhookGpioFields & SRV_GPIO_TEMPC) {
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId,
+            .value = g_dsTempsC[i],
+            .sensorType = "temperature",
+            .unit = "°C",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 temp",
+          });
+        }
+        if (g_webhookGpioFields & SRV_GPIO_TEMPF) {
+          const float tempf = tempfFromC(g_dsTempsC[i]);
+          dsBatch.readings.push_back(NettempReading{
+            .sensorId = sensorId + "_tempf",
+            .value = tempf,
+            .sensorType = "temperature_f",
+            .unit = "°F",
+            .timestamp = ts,
+            .friendlyName = "DS18B20 tempf",
+          });
+        }
+        if (!dsBatch.readings.empty()) {
+          const String payload = buildWebhookPayload(dsBatch);
+          webhookPostJson(g_cfg.webhookUrl, payload);
+          anySent = true;
+        }
       }
     }
     if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
       const String base = deviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_temp",
-        .value = g_dhtTempC,
-        .sensorType = "temperature",
-        .unit = "°C",
-        .timestamp = ts,
-        .friendlyName = "DHT temp",
-      });
-      if (!isnan(g_dhtHumPct)) {
+      if (g_webhookGpioFields & SRV_GPIO_TEMPC) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_temp",
+          .value = g_dhtTempC,
+          .sensorType = "temperature",
+          .unit = "°C",
+          .timestamp = ts,
+          .friendlyName = "DHT temp",
+        });
+      }
+      if (g_webhookGpioFields & SRV_GPIO_TEMPF) {
+        const float tempf = tempfFromC(g_dhtTempC);
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_tempf",
+          .value = tempf,
+          .sensorType = "temperature_f",
+          .unit = "°F",
+          .timestamp = ts,
+          .friendlyName = "DHT tempf",
+        });
+      }
+      if ((g_webhookGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_hum",
           .value = g_dhtHumPct,
@@ -2083,15 +2200,17 @@ static void tickSendWebhook() {
       }
     }
     if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
-      batch.readings.push_back(NettempReading{
-        .sensorId = deviceId + "_batt",
-        .value = (float)g_vbatPct,
-        .sensorType = "battery",
-        .unit = "%",
-        .timestamp = ts,
-        .friendlyName = "battery",
-      });
-      if (g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
+      if (g_webhookGpioFields & SRV_GPIO_BATT) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = deviceId + "_batt",
+          .value = (float)g_vbatPct,
+          .sensorType = "battery",
+          .unit = "%",
+          .timestamp = ts,
+          .friendlyName = "battery",
+        });
+      }
+      if ((g_webhookGpioFields & SRV_GPIO_VOLT) && g_cfg.vbatSendVolt && !isnan(g_vbatVolts)) {
         batch.readings.push_back(NettempReading{
           .sensorId = deviceId + "_vbat",
           .value = g_vbatVolts,
@@ -2104,7 +2223,7 @@ static void tickSendWebhook() {
     }
     if (g_cfg.soilEnabled && g_soilRaw >= 0) {
       const String base = deviceId + "-soil_adc" + String(g_cfg.soilAdcPin);
-      if (g_cfg.soilSendRaw) {
+      if (g_webhookGpioFields & SRV_GPIO_SOIL_RAW) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_raw",
           .value = (float)g_soilRaw,
@@ -2114,7 +2233,7 @@ static void tickSendWebhook() {
           .friendlyName = "soil raw",
         });
       }
-      if (g_cfg.soilSendPct && !isnan(g_soilPct)) {
+      if ((g_webhookGpioFields & SRV_GPIO_SOIL_PCT) && !isnan(g_soilPct)) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_pct",
           .value = g_soilPct,
@@ -2127,14 +2246,16 @@ static void tickSendWebhook() {
     }
     if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
       const String base = deviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-      batch.readings.push_back(NettempReading{
-        .sensorId = base + "_cm",
-        .value = g_hcsr04Cm,
-        .sensorType = "distance",
-        .unit = "cm",
-        .timestamp = ts,
-        .friendlyName = "distance",
-      });
+      if (g_webhookGpioFields & SRV_GPIO_DIST_CM) {
+        batch.readings.push_back(NettempReading{
+          .sensorId = base + "_cm",
+          .value = g_hcsr04Cm,
+          .sensorType = "distance",
+          .unit = "cm",
+          .timestamp = ts,
+          .friendlyName = "distance",
+        });
+      }
     }
     if (!batch.readings.empty()) {
       const String payload = buildWebhookPayload(batch);

@@ -149,6 +149,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
           "<button type='button' class='tabbtn' id='btn-tab-system' onclick=\"showTab('tab-system')\">System</button>"
           "</div>";
 
+  auto renderTabStatus = [&]() {
   body += "<div class='card tab' id='tab-status'>";
   body += "<h3>Status</h3>";
   {
@@ -183,7 +184,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
       bool anyBle = false;
       for (size_t k = 0; k < idx.size(); k++) {
         const auto& s = g_sensors[idx[k]];
-        if (!s.selected) continue;
+        if (!bleIsSelected(s)) continue;
         const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0 || s.voltageMv >= 0 || s.rssi != 0;
         if (!hasValues) continue;
         anyBle = true;
@@ -204,7 +205,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
         bleIdx.reserve(idx.size());
         for (size_t k = 0; k < idx.size(); k++) {
           const auto& s = g_sensors[idx[k]];
-          if (!s.selected) continue;
+          if (!bleIsSelected(s)) continue;
           const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0 || s.voltageMv >= 0 || s.rssi != 0;
           if (!hasValues) continue;
           bleIdx.push_back(idx[k]);
@@ -455,7 +456,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   }
 
   body += "</div>";
+  };
+  renderTabStatus();
 
+  auto renderTabBle = [&]() {
   body += "<div class='card tab hidden' id='tab-ble'>";
   body += "<h3>BLE</h3>";
   body += "<form method='POST' action='/save_ble'>";
@@ -513,7 +517,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p style='margin:12px 0 0'><button type='submit'>Apply</button></p>";
   body += "</form>";
   body += "</div>";
+  };
+  renderTabBle();
 
+  auto renderTabI2c = [&]() {
   body += "<div class='card tab hidden' id='tab-i2c'>";
   body += "<h3>I2C</h3>";
 #if NETTEMP_ENABLE_I2C
@@ -650,7 +657,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p>I2C support is disabled in this build (<code>NETTEMP_ENABLE_I2C=0</code>).</p>";
 #endif
   body += "</div>";
+  };
+  renderTabI2c();
 
+  auto renderTabGpio = [&]() {
   body += "<div class='card tab hidden' id='tab-gpio'>";
   body += "<h3>GPIO sensors</h3>";
   body += "<div class='tile-grid'>";
@@ -789,7 +799,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</div>";
   body += "</div>";
   body += "</div>";
+  };
+  renderTabGpio();
 
+  auto renderTabOled = [&]() {
   body += "<div class='card tab hidden' id='tab-oled'>";
   body += "<h3>OLED SSD1306</h3>";
   body += "<form method='POST' action='/save_oled'>";
@@ -913,13 +926,15 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
   body += "</div>";
+  };
+  renderTabOled();
 
+  auto renderTabChannels = [&]() {
   body += "<div class='card tab hidden' id='tab-channels'>";
   body += "<h3>Channels</h3>";
   body += "<div class='tile-grid'>";
   body += "<div class='tile'>";
   body += "<h4 style='margin:0 0 4px'>MQTT <span style='color:var(--muted);font-size:12px;font-weight:400'>(" + htmlEscape(formatSendStatus(g_lastMqttLocalSentMs, g_cfg.mqttIntervalMs)) + ")</span></h4>";
-  body += "<form method='POST' action='/send_mqtt' style='margin:0 0 8px'><button type='submit'>Send now</button></form>";
   body += "<form method='POST' action='/save_mqtt'>";
   body += "<label><input type='checkbox' name='mqttEn' value='1' " + String(g_cfg.mqttEnabled ? "checked" : "") + "> Enable MQTT</label>";
   body += "<div class='grid2'><div><label>Host</label><input name='mqttHost' value='" + htmlEscape(g_cfg.mqttHost) + "'/></div>";
@@ -933,21 +948,25 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<label><input type='checkbox' name='mqttGpio' value='1' " + String(g_cfg.gpioSendMqtt ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='mqttI2c' value='1' " + String(g_cfg.i2cSendMqtt ? "checked" : "") + "> I2C</label>";
   body += "</div>";
+  body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>Show JSON fields</summary>";
   body += "<label style='margin-top:12px'>MQTT JSON fields (BLE)</label>";
   appendBleFieldCheckboxes(body, "m_f_", g_mqttBleFields);
 #if NETTEMP_ENABLE_I2C
   body += "<label style='margin-top:12px'>MQTT JSON fields (I2C)</label>";
   appendI2cFieldCheckboxes(body, "m_f_i2c_", g_mqttI2cFields);
 #endif
-  body += "<label style='margin-top:12px'>MQTT JSON fields (Soil)</label>";
-  appendSoilFieldCheckboxes(body, "m_f_soil_", g_cfg.mqttSoilSendRaw, g_cfg.mqttSoilSendPct);
-  body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
+  body += "<label style='margin-top:12px'>MQTT JSON fields (GPIO)</label>";
+  appendGpioFieldCheckboxes(body, "m_f_gpio_", g_mqttGpioFields);
+  body += "</details>";
+  body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
+  body += "<button type='submit'>Save</button>";
+  body += "<button type='submit' formaction='/send_mqtt'>Send now</button>";
+  body += "</p>";
   body += "</form>";
   body += "</div>";
 
   body += "<div class='tile'>";
   body += "<h4 style='margin:0 0 4px'>Cloud server <span style='color:var(--muted);font-size:12px;font-weight:400'>(" + htmlEscape(formatSendStatus(g_lastServerSendMs, g_cfg.serverIntervalMs)) + ")</span></h4>";
-  body += "<form method='POST' action='/send_server' style='margin:0 0 8px'><button type='submit'>Send now</button></form>";
   body += "<form method='POST' action='/save_server'>";
   body += "<label><input type='checkbox' name='srvEn' value='1' " + String(g_cfg.serverEnabled ? "checked" : "") + "> Enable cloud server</label>";
   body += "<label>Cloud base URL</label><input name='srvUrl' value='" + htmlEscape(g_cfg.serverBaseUrl) + "'/>";
@@ -959,21 +978,25 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<label><input type='checkbox' name='srvGpio' value='1' " + String(g_cfg.gpioSendServer ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='srvI2c' value='1' " + String(g_cfg.i2cSendServer ? "checked" : "") + "> I2C</label>";
   body += "</div>";
+  body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>Show JSON fields</summary>";
   body += "<label style='margin-top:12px'>Cloud JSON fields (BLE)</label>";
   appendBleFieldCheckboxes(body, "f_", g_srvBleFields);
 #if NETTEMP_ENABLE_I2C
   body += "<label style='margin-top:12px'>Cloud JSON fields (I2C)</label>";
   appendI2cFieldCheckboxes(body, "f_i2c_", g_srvI2cFields);
 #endif
-  body += "<label style='margin-top:12px'>Cloud JSON fields (Soil)</label>";
-  appendSoilFieldCheckboxes(body, "f_soil_", g_cfg.soilSendRaw, g_cfg.soilSendPct);
-  body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
+  body += "<label style='margin-top:12px'>Cloud JSON fields (GPIO)</label>";
+  appendGpioFieldCheckboxes(body, "f_gpio_", g_srvGpioFields);
+  body += "</details>";
+  body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
+  body += "<button type='submit'>Save</button>";
+  body += "<button type='submit' formaction='/send_server'>Send now</button>";
+  body += "</p>";
   body += "</form>";
   body += "</div>";
 
   body += "<div class='tile'>";
   body += "<h4 style='margin:0 0 4px'>Local server <span style='color:var(--muted);font-size:12px;font-weight:400'>(" + htmlEscape(formatSendStatus(g_lastLocalServerSendMs, g_cfg.localServerIntervalMs)) + ")</span></h4>";
-  body += "<form method='POST' action='/send_local_server' style='margin:0 0 8px'><button type='submit'>Send now</button></form>";
   body += "<form method='POST' action='/save_local_server'>";
   body += "<label><input type='checkbox' name='lsEn' value='1' " + String(g_cfg.localServerEnabled ? "checked" : "") + "> Enable local server</label>";
   body += "<label>Local URL (full path)</label><input name='lsUrl' value='" + htmlEscape(g_cfg.localServerUrl) + "' placeholder='http://192.168.1.10/api/v1/data'/>";
@@ -985,21 +1008,25 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<label><input type='checkbox' name='lsGpio' value='1' " + String(g_cfg.gpioSendLocalServer ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='lsI2c' value='1' " + String(g_cfg.i2cSendLocalServer ? "checked" : "") + "> I2C</label>";
   body += "</div>";
+  body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>Show JSON fields</summary>";
   body += "<label style='margin-top:12px'>Local JSON fields (BLE)</label>";
   appendBleFieldCheckboxes(body, "ls_f_", g_localBleFields);
 #if NETTEMP_ENABLE_I2C
   body += "<label style='margin-top:12px'>Local JSON fields (I2C)</label>";
   appendI2cFieldCheckboxes(body, "ls_f_i2c_", g_localI2cFields);
 #endif
-  body += "<label style='margin-top:12px'>Local JSON fields (Soil)</label>";
-  appendSoilFieldCheckboxes(body, "ls_f_soil_", g_cfg.localSoilSendRaw, g_cfg.localSoilSendPct);
-  body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
+  body += "<label style='margin-top:12px'>Local JSON fields (GPIO)</label>";
+  appendGpioFieldCheckboxes(body, "ls_f_gpio_", g_localGpioFields);
+  body += "</details>";
+  body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
+  body += "<button type='submit'>Save</button>";
+  body += "<button type='submit' formaction='/send_local_server'>Send now</button>";
+  body += "</p>";
   body += "</form>";
   body += "</div>";
 
   body += "<div class='tile'>";
   body += "<h4 style='margin:0 0 4px'>Webhook <span style='color:var(--muted);font-size:12px;font-weight:400'>(" + htmlEscape(formatSendStatus(g_lastWebhookSendMs, g_cfg.webhookIntervalMs)) + ")</span></h4>";
-  body += "<form method='POST' action='/send_webhook' style='margin:0 0 8px'><button type='submit'>Send now</button></form>";
   body += "<form method='POST' action='/save_webhook'>";
   body += "<label><input type='checkbox' name='whEn' value='1' " + String(g_cfg.webhookEnabled ? "checked" : "") + "> Enable Webhook</label>";
   body += "<label>Webhook URL</label><input name='whUrl' value='" + htmlEscape(g_cfg.webhookUrl) + "' placeholder='https://example.com/hook'/>";
@@ -1010,18 +1037,28 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<label><input type='checkbox' name='whGpio' value='1' " + String(g_cfg.gpioSendWebhook ? "checked" : "") + "> GPIO</label>";
   body += "<label><input type='checkbox' name='whI2c' value='1' " + String(g_cfg.i2cSendWebhook ? "checked" : "") + "> I2C</label>";
   body += "</div>";
+  body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>Show JSON fields</summary>";
   body += "<label style='margin-top:12px'>Webhook JSON fields (BLE)</label>";
   appendBleFieldCheckboxes(body, "w_f_", g_webhookBleFields);
 #if NETTEMP_ENABLE_I2C
   body += "<label style='margin-top:12px'>Webhook JSON fields (I2C)</label>";
   appendI2cFieldCheckboxes(body, "w_f_i2c_", g_webhookI2cFields);
 #endif
-  body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
+  body += "<label style='margin-top:12px'>Webhook JSON fields (GPIO)</label>";
+  appendGpioFieldCheckboxes(body, "w_f_gpio_", g_webhookGpioFields);
+  body += "</details>";
+  body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
+  body += "<button type='submit'>Save</button>";
+  body += "<button type='submit' formaction='/send_webhook'>Send now</button>";
+  body += "</p>";
   body += "</form>";
   body += "</div>";
   body += "</div>";
   body += "</div>";
+  };
+  renderTabChannels();
 
+  auto renderTabDevice = [&]() {
   body += "<div class='card tab hidden' id='tab-device'>";
   body += "<h3>Device</h3>";
   body += "<div class='tile-grid'>";
@@ -1058,7 +1095,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</div>";
   body += "</div>";
   body += "</div>";
+  };
+  renderTabDevice();
 
+  auto renderTabAdmin = [&]() {
   body += "<div class='card tab hidden' id='tab-admin'>";
   body += "<h3>Admin</h3>";
   body += "<form method='POST' action='/save_admin'>";
@@ -1067,7 +1107,10 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
   body += "</div>";
+  };
+  renderTabAdmin();
 
+  auto renderTabSystem = [&]() {
   body += "<div class='card tab hidden' id='tab-system'>";
   body += "<h3>System</h3>";
   body += "<p><code>" + String(ESP.getChipModel()) + "</code> | rev <code>" + String(ESP.getChipRevision()) +
@@ -1112,6 +1155,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           "<form method='POST' action='/reset' onsubmit=\"return confirm('Reset all settings?');\"><button type='submit'>Factory Reset</button></form>"
           "</div>";
   body += "</div>";
+  };
+  renderTabSystem();
 
   body += "</div></body></html>";
   return body;

@@ -77,8 +77,6 @@ struct AppSettings {
   bool gpioSendMqtt = true;
   bool gpioSendWebhook = true;
   bool gpioSendLocalServer = true;
-  bool localSoilSendRaw = true;
-  bool localSoilSendPct = true;
 
   // GPIO sensors
   bool dsEnabled = false;
@@ -90,10 +88,6 @@ struct AppSettings {
   int soilAdcPin = 34; // ADC1 pin for capacitive soil sensor
   int soilDryRaw = 3000;
   int soilWetRaw = 1400;
-  bool soilSendRaw = true;
-  bool soilSendPct = true;
-  bool mqttSoilSendRaw = true;
-  bool mqttSoilSendPct = true;
   bool hcsr04Enabled = false;
   int hcsr04TrigPin = 4;
   int hcsr04EchoPin = 16;
@@ -188,6 +182,25 @@ uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
 uint32_t g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+
+// GPIO → Server/Local/MQTT/Webhook field selection.
+// Defaults: all GPIO fields enabled.
+constexpr uint32_t SRV_GPIO_TEMPC = 1u << 0;
+constexpr uint32_t SRV_GPIO_TEMPF = 1u << 1;
+constexpr uint32_t SRV_GPIO_HUM = 1u << 2;
+constexpr uint32_t SRV_GPIO_BATT = 1u << 3;
+constexpr uint32_t SRV_GPIO_VOLT = 1u << 4;
+constexpr uint32_t SRV_GPIO_SOIL_RAW = 1u << 5;
+constexpr uint32_t SRV_GPIO_SOIL_PCT = 1u << 6;
+constexpr uint32_t SRV_GPIO_DIST_CM = 1u << 7;
+constexpr uint32_t SRV_GPIO_DEFAULT =
+  (SRV_GPIO_TEMPC | SRV_GPIO_TEMPF | SRV_GPIO_HUM | SRV_GPIO_BATT | SRV_GPIO_VOLT |
+   SRV_GPIO_SOIL_RAW | SRV_GPIO_SOIL_PCT | SRV_GPIO_DIST_CM);
+constexpr uint32_t SRV_GPIO_DEFAULT_LOCAL = SRV_GPIO_DEFAULT & ~(SRV_GPIO_TEMPF | SRV_GPIO_VOLT);
+uint32_t g_srvGpioFields = SRV_GPIO_DEFAULT;
+uint32_t g_mqttGpioFields = SRV_GPIO_DEFAULT;
+uint32_t g_webhookGpioFields = SRV_GPIO_DEFAULT;
+uint32_t g_localGpioFields = SRV_GPIO_DEFAULT_LOCAL;
 
 std::vector<SensorRow> g_sensors;
 bool g_bleAutoScan = true;
@@ -333,6 +346,13 @@ static bool bleManualGetSelected(const String& macNo, bool& outSelected) {
   if (!e) return false;
   outSelected = e->selected;
   return true;
+}
+
+static bool bleIsSelected(const SensorRow& s) {
+  const String macNo = macNoColonsUpper(s.mac);
+  bool manualSelected = false;
+  const bool manual = bleManualGetSelected(macNo, manualSelected);
+  return manual ? manualSelected : s.selected;
 }
 
 static void bleManualSet(const String& macNo, bool selected) {
@@ -490,6 +510,14 @@ static void prefsLoad() {
   if (g_localBleFields == 0) g_localBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_localI2cFields = g_prefs.getUInt("lsI2cF", g_localI2cFields);
   if (g_localI2cFields == 0) g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  g_srvGpioFields = g_prefs.getUInt("srvGpioF", g_srvGpioFields);
+  if (g_srvGpioFields == 0) g_srvGpioFields = SRV_GPIO_DEFAULT;
+  g_mqttGpioFields = g_prefs.getUInt("mqGpioF", g_mqttGpioFields);
+  if (g_mqttGpioFields == 0) g_mqttGpioFields = SRV_GPIO_DEFAULT;
+  g_webhookGpioFields = g_prefs.getUInt("whGpioF", g_webhookGpioFields);
+  if (g_webhookGpioFields == 0) g_webhookGpioFields = SRV_GPIO_DEFAULT;
+  g_localGpioFields = g_prefs.getUInt("lsGpioF", g_localGpioFields);
+  if (g_localGpioFields == 0) g_localGpioFields = SRV_GPIO_DEFAULT_LOCAL;
   bleManualDecode(g_prefs.getString("bleMan", ""));
 
   g_cfg.dsEnabled = g_prefs.getBool("dsEn", g_cfg.dsEnabled);
@@ -501,12 +529,6 @@ static void prefsLoad() {
   g_cfg.soilAdcPin = (int)g_prefs.getInt("soilPin", g_cfg.soilAdcPin);
   g_cfg.soilDryRaw = (int)g_prefs.getInt("soilDry", g_cfg.soilDryRaw);
   g_cfg.soilWetRaw = (int)g_prefs.getInt("soilWet", g_cfg.soilWetRaw);
-  g_cfg.soilSendRaw = g_prefs.getBool("soilRaw", g_cfg.soilSendRaw);
-  g_cfg.soilSendPct = g_prefs.getBool("soilPct", g_cfg.soilSendPct);
-  g_cfg.mqttSoilSendRaw = g_prefs.getBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
-  g_cfg.mqttSoilSendPct = g_prefs.getBool("mqSoilPct", g_cfg.mqttSoilSendPct);
-  g_cfg.localSoilSendRaw = g_prefs.getBool("lsSoilRaw", g_cfg.localSoilSendRaw);
-  g_cfg.localSoilSendPct = g_prefs.getBool("lsSoilPct", g_cfg.localSoilSendPct);
   g_cfg.hcsr04Enabled = g_prefs.getBool("hcEn", g_cfg.hcsr04Enabled);
   g_cfg.hcsr04TrigPin = (int)g_prefs.getInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_cfg.hcsr04EchoPin = (int)g_prefs.getInt("hcEcho", g_cfg.hcsr04EchoPin);
@@ -684,6 +706,10 @@ static void prefsSave() {
   g_prefs.putUInt("whI2cF", g_webhookI2cFields);
   g_prefs.putUInt("lsBleF", g_localBleFields);
   g_prefs.putUInt("lsI2cF", g_localI2cFields);
+  g_prefs.putUInt("srvGpioF", g_srvGpioFields);
+  g_prefs.putUInt("mqGpioF", g_mqttGpioFields);
+  g_prefs.putUInt("whGpioF", g_webhookGpioFields);
+  g_prefs.putUInt("lsGpioF", g_localGpioFields);
   g_prefs.putString("bleMan", bleManualEncode());
 #if NETTEMP_ENABLE_I2C
   if (!g_i2cSensors.empty()) {
@@ -700,12 +726,6 @@ static void prefsSave() {
   g_prefs.putInt("soilPin", g_cfg.soilAdcPin);
   g_prefs.putInt("soilDry", g_cfg.soilDryRaw);
   g_prefs.putInt("soilWet", g_cfg.soilWetRaw);
-  g_prefs.putBool("soilRaw", g_cfg.soilSendRaw);
-  g_prefs.putBool("soilPct", g_cfg.soilSendPct);
-  g_prefs.putBool("mqSoilRaw", g_cfg.mqttSoilSendRaw);
-  g_prefs.putBool("mqSoilPct", g_cfg.mqttSoilSendPct);
-  g_prefs.putBool("lsSoilRaw", g_cfg.localSoilSendRaw);
-  g_prefs.putBool("lsSoilPct", g_cfg.localSoilSendPct);
   g_prefs.putBool("hcEn", g_cfg.hcsr04Enabled);
   g_prefs.putInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_prefs.putInt("hcEcho", g_cfg.hcsr04EchoPin);
