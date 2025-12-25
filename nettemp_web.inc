@@ -310,14 +310,7 @@ static void resetMqttSendState() {
 #endif
 }
 
-static void handleSendNow(uint32_t& lastSendMs, void (*tick)(), bool resetMqttState) {
-  if (!webRequireAuth()) return;
-  if (resetMqttState) resetMqttSendState();
-  lastSendMs = 0;
-  tick();
-  g_webServer.sendHeader("Location", "/", true);
-  g_webServer.send(302, "text/plain", "");
-}
+// REMOVED: Old blocking handleSendNow - replaced with async handlers below
 
 static String dsRomLinuxId(const std::array<uint8_t, 8>& rom, uint8_t bus, bool includeBus) {
   char out[32]{};
@@ -326,9 +319,9 @@ static String dsRomLinuxId(const std::array<uint8_t, 8>& rom, uint8_t bus, bool 
   snprintf(serial, sizeof(serial), "%02X%02X%02X%02X%02X%02X",
            rom[6], rom[5], rom[4], rom[3], rom[2], rom[1]);
   if (includeBus) {
-    snprintf(out, sizeof(out), "%02x-%02X_%s", (unsigned)bus, (unsigned)rom[0], serial);
+    snprintf(out, sizeof(out), "%02x-ds_%02X_%s", (unsigned)bus, (unsigned)rom[0], serial);
   } else {
-    snprintf(out, sizeof(out), "%02X_%s", (unsigned)rom[0], serial);
+    snprintf(out, sizeof(out), "ds_%02X_%s", (unsigned)rom[0], serial);
   }
   String s(out);
   s.toLowerCase();
@@ -711,20 +704,60 @@ static void configHandleSaveWebhook() {
 }
 
 static void configHandleSendMqtt() {
-  handleSendNow(g_lastMqttLocalSentMs, tickSendMqtt, true);
+  if (!webRequireAuth()) return;
+  resetMqttSendState();
+  g_lastMqttLocalSentMs = 0;
+  g_sendStatusMqtt = 1;  // Set status to "sending"
+  g_pendingSendMqtt = true;  // Set async flag instead of blocking
+  g_webServer.send(200, "text/plain", "OK");
 }
 
 static void configHandleSendServer() {
-  handleSendNow(g_lastServerSendMs, tickSendServer, false);
+  if (!webRequireAuth()) return;
+  g_lastServerSendMs = 0;
+  g_sendStatusServer = 1;  // Set status to "sending"
+  g_pendingSendServer = true;  // Set async flag instead of blocking
+  g_webServer.send(200, "text/plain", "OK");
 }
 
 static void configHandleSendLocalServer() {
-  handleSendNow(g_lastLocalServerSendMs, tickSendLocalServer, false);
+  if (!webRequireAuth()) return;
+  g_lastLocalServerSendMs = 0;
+  g_sendStatusLocalServer = 1;  // Set status to "sending"
+  g_pendingSendLocalServer = true;  // Set async flag instead of blocking
+  g_webServer.send(200, "text/plain", "OK");
 }
 
 #if NETTEMP_ENABLE_SERVER
 static void configHandleSendWebhook() {
-  handleSendNow(g_lastWebhookSendMs, tickSendWebhook, false);
+  if (!webRequireAuth()) return;
+  g_lastWebhookSendMs = 0;
+  g_sendStatusWebhook = 1;  // Set status to "sending"
+  g_pendingSendWebhook = true;  // Set async flag instead of blocking
+  g_webServer.send(200, "text/plain", "OK");
+}
+#endif
+
+// Status endpoints for AJAX polling
+static void configHandleSendStatusMqtt() {
+  if (!webRequireAuth()) return;
+  g_webServer.send(200, "text/plain", String(g_sendStatusMqtt));
+}
+
+static void configHandleSendStatusServer() {
+  if (!webRequireAuth()) return;
+  g_webServer.send(200, "text/plain", String(g_sendStatusServer));
+}
+
+static void configHandleSendStatusLocalServer() {
+  if (!webRequireAuth()) return;
+  g_webServer.send(200, "text/plain", String(g_sendStatusLocalServer));
+}
+
+#if NETTEMP_ENABLE_SERVER
+static void configHandleSendStatusWebhook() {
+  if (!webRequireAuth()) return;
+  g_webServer.send(200, "text/plain", String(g_sendStatusWebhook));
 }
 #endif
 
@@ -1053,6 +1086,12 @@ static void configServerStart() {
   g_webServer.on("/send_local_server", HTTP_POST, configHandleSendLocalServer);
 #if NETTEMP_ENABLE_SERVER
   g_webServer.on("/send_webhook", HTTP_POST, configHandleSendWebhook);
+#endif
+  g_webServer.on("/send_status_mqtt", HTTP_GET, configHandleSendStatusMqtt);
+  g_webServer.on("/send_status_server", HTTP_GET, configHandleSendStatusServer);
+  g_webServer.on("/send_status_local_server", HTTP_GET, configHandleSendStatusLocalServer);
+#if NETTEMP_ENABLE_SERVER
+  g_webServer.on("/send_status_webhook", HTTP_GET, configHandleSendStatusWebhook);
 #endif
   g_webServer.on("/ota", HTTP_POST, configHandleOtaFinish, configHandleOtaUpload);
   g_webServer.on("/save_device", HTTP_POST, configHandleSaveDevice);

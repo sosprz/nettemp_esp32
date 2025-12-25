@@ -16,36 +16,23 @@ static bool vbatReadVolts(float& outV) {
   if (g_cfg.vbatMode == 2) {
 #if NETTEMP_CARDPUTER_UI
     // Cardputer PMIC (best-effort; only if the M5Cardputer Power API provides it).
-    struct M5Pmic {
-      template <typename T>
-      static auto batteryVoltage(const T& o, int) -> decltype(o.Power.getBatteryVoltage()) {
-        return o.Power.getBatteryVoltage();
-      }
-      static float batteryVoltage(...) { return NAN; }
-
-      template <typename T>
-      static auto batteryLevel(const T& o, int) -> decltype(o.Power.getBatteryLevel()) {
-        return o.Power.getBatteryLevel();
-      }
-      static int batteryLevel(...) { return -1; }
-    };
-
-    float v = (float)M5Pmic::batteryVoltage(M5Cardputer, 0);
-    if (!isnan(v)) {
-      if (v > 20.0f) v = v / 1000.0f; // mV -> V
-      if (v > 1.0f && v < 6.0f) {
+    // M5Cardputer v1.1.1: Power API may not be available; fallback to ADC.
+    // Try using M5.Power if available (M5Unified API).
+    #ifdef ARDUINO_M5STACK_CARDPUTER
+    if (M5.Power.isEnabled()) {
+      float v = M5.Power.getBatteryVoltage() / 1000.0f;  // mV -> V
+      if (!isnan(v) && v > 1.0f && v < 6.0f) {
         outV = v;
         return true;
       }
+      int pct = M5.Power.getBatteryLevel();
+      if (pct >= 0 && pct <= 100) {
+        g_vbatPct = pct;
+        g_vbatLastSeenMs = millis();
+        return false;
+      }
     }
-
-    const int pct = (int)M5Pmic::batteryLevel(M5Cardputer, 0);
-    if (pct >= 0 && pct <= 100) {
-      g_vbatPct = pct;
-      g_vbatLastSeenMs = millis();
-      // No voltage available; treat as "read succeeded" for percent-only flows.
-      return false;
-    }
+    #endif
 #endif
     // If PMIC not available, continue to ADC path.
   }

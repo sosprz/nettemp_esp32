@@ -76,7 +76,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
                 "</style>"
                 "<script>"
                 "function showTab(id){"
-                "const tab=document.getElementById(id);"
+                "let tab=document.getElementById(id);"
+                "if(!tab){id='tab-status';tab=document.getElementById(id);}"
                 "const btn=document.getElementById('btn-'+id);"
                 "if(!tab) return;"
                 "document.querySelectorAll('.tab').forEach(el=>el.classList.add('hidden'));"
@@ -126,7 +127,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
                 "}"
                 "window.addEventListener('load',()=>{"
                 "const id=localStorage.getItem('nettemp_tab')||'tab-status';"
-                "if(document.getElementById(id)) showTab(id);"
+                "showTab(id);"
                 "});"
                 "</script>"
                 "</head><body><div class='wrap'>";
@@ -176,22 +177,50 @@ static String buildConfigPage(WebPrefsView& prefs) {
     const bool showSoilPct = g_cfg.soilEnabled;
     const bool showHcDist = g_cfg.hcsr04Enabled;
     const uint32_t nowMs = millis();
+    auto bleDisplayScore = [&](const SensorRow& s) {
+      int score = 0;
+      if (showTempc && !isnan(s.temperatureC)) score++;
+      if (showTempf && !isnan(s.temperatureC)) score++;
+      if (showHum && !isnan(s.humidityPct)) score++;
+      if (showVolt && s.voltageMv >= 0) score++;
+      if (showBatt && s.batteryPct >= 0) score++;
+      if (showRssi && s.rssi != 0) score++;
+      return score;
+    };
     body += "<h4 style='margin:8px 0 6px'>Sensors</h4>";
 
     bool anyStatusTable = false;
     {
       const auto idx = buildBleSortedIndex();
-      bool anyBle = false;
+      std::vector<size_t> bleIdx;
+      std::vector<String> bleMacs;
+      bleIdx.reserve(idx.size());
+      bleMacs.reserve(idx.size());
       for (size_t k = 0; k < idx.size(); k++) {
-        const auto& s = g_sensors[idx[k]];
+        const size_t sensorIdx = idx[k];
+        const auto& s = g_sensors[sensorIdx];
         if (!bleIsSelected(s)) continue;
-        const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0 || s.voltageMv >= 0 || s.rssi != 0;
-        if (!hasValues) continue;
-        anyBle = true;
-        break;
+        const int score = bleDisplayScore(s);
+        if (score == 0) continue;
+        const String macNo = macNoColonsUpper(s.mac);
+        bool found = false;
+        for (size_t i = 0; i < bleMacs.size(); i++) {
+          if (bleMacs[i] == macNo) {
+            const int existingScore = bleDisplayScore(g_sensors[bleIdx[i]]);
+            if (score > existingScore) {
+              bleIdx[i] = sensorIdx;
+            }
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          bleMacs.push_back(macNo);
+          bleIdx.push_back(sensorIdx);
+        }
       }
 
-      if (anyBle) {
+      if (!bleIdx.empty()) {
         body += "<div class='tablewrap'><table><tr><th>Name</th><th>BLE</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
@@ -201,15 +230,6 @@ static String buildConfigPage(WebPrefsView& prefs) {
         if (showRssi) body += "<th>rssi</th>";
         body += "</tr>";
 
-        std::vector<size_t> bleIdx;
-        bleIdx.reserve(idx.size());
-        for (size_t k = 0; k < idx.size(); k++) {
-          const auto& s = g_sensors[idx[k]];
-          if (!bleIsSelected(s)) continue;
-          const bool hasValues = !isnan(s.temperatureC) || !isnan(s.humidityPct) || s.batteryPct >= 0 || s.voltageMv >= 0 || s.rssi != 0;
-          if (!hasValues) continue;
-          bleIdx.push_back(idx[k]);
-        }
         std::sort(bleIdx.begin(), bleIdx.end(), [&](size_t a, size_t b) {
           const auto& sa = g_sensors[a];
           const auto& sb = g_sensors[b];
@@ -554,7 +574,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
 
   // Debug: Show all I2C addresses detected
   if (!g_i2cDetectedAddrs.empty()) {
-    body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>🔍 Debug: I2C scan details</summary>";
+    body += "<details><summary style='cursor:pointer;color:var(--muted);font-size:0.9em'>🔍 I2C scan details</summary>";
     body += "<div style='background:var(--card);border:1px solid var(--border);padding:8px;margin:8px 0;font-family:monospace;font-size:0.85em'>";
 
     // Bus health check
@@ -960,7 +980,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</details>";
   body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
   body += "<button type='submit'>Save</button>";
-  body += "<button type='submit' formaction='/send_mqtt'>Send now</button>";
+  body += "<button type='button' id='sendMqtt'>Send now</button>";
+  body += "<span id='statusMqtt' style='color:var(--muted);font-size:0.9em'></span>";
   body += "</p>";
   body += "</form>";
   body += "</div>";
@@ -990,7 +1011,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</details>";
   body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
   body += "<button type='submit'>Save</button>";
-  body += "<button type='submit' formaction='/send_server'>Send now</button>";
+  body += "<button type='button' id='sendServer'>Send now</button>";
+  body += "<span id='statusServer' style='color:var(--muted);font-size:0.9em'></span>";
   body += "</p>";
   body += "</form>";
   body += "</div>";
@@ -1020,7 +1042,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</details>";
   body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
   body += "<button type='submit'>Save</button>";
-  body += "<button type='submit' formaction='/send_local_server'>Send now</button>";
+  body += "<button type='button' id='sendLocalServer'>Send now</button>";
+  body += "<span id='statusLocalServer' style='color:var(--muted);font-size:0.9em'></span>";
   body += "</p>";
   body += "</form>";
   body += "</div>";
@@ -1049,7 +1072,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</details>";
   body += "<p style='margin:12px 0 0;display:flex;gap:8px;align-items:center'>";
   body += "<button type='submit'>Save</button>";
-  body += "<button type='submit' formaction='/send_webhook'>Send now</button>";
+  body += "<button type='button' id='sendWebhook'>Send now</button>";
+  body += "<span id='statusWebhook' style='color:var(--muted);font-size:0.9em'></span>";
   body += "</p>";
   body += "</form>";
   body += "</div>";
@@ -1116,6 +1140,55 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p><code>" + String(ESP.getChipModel()) + "</code> | rev <code>" + String(ESP.getChipRevision()) +
           "</code> | cores <code>" + String(ESP.getChipCores()) + "</code> | CPU <code>" +
           String((unsigned long)(ESP.getCpuFreqMHz())) + " MHz</code></p>";
+
+  // Memory statistics
+  {
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t totalHeap = ESP.getHeapSize();
+    const uint32_t usedHeap = totalHeap - freeHeap;
+    const uint32_t minFreeHeap = ESP.getMinFreeHeap();
+    const float usedPct = (totalHeap > 0) ? (usedHeap * 100.0f / totalHeap) : 0.0f;
+
+    body += "<p>Heap: <code>" + String(usedHeap / 1024) + " KB</code> used (<code>" + String(usedPct, 1) + "%</code>)";
+    body += " | <code>" + String(freeHeap / 1024) + " KB</code> free";
+    body += " | total <code>" + String(totalHeap / 1024) + " KB</code>";
+    body += " | min free <code>" + String(minFreeHeap / 1024) + " KB</code></p>";
+
+    // PSRAM info
+    const uint32_t psramSize = ESP.getPsramSize();
+    if (psramSize > 0) {
+      const uint32_t freePsram = ESP.getFreePsram();
+      const uint32_t usedPsram = psramSize - freePsram;
+      const float psramUsedPct = (psramSize > 0) ? (usedPsram * 100.0f / psramSize) : 0.0f;
+
+      body += "<p>PSRAM: <code>" + String(usedPsram / 1024) + " KB</code> used (<code>" + String(psramUsedPct, 1) + "%</code>)";
+      body += " | <code>" + String(freePsram / 1024) + " KB</code> free";
+      body += " | total <code>" + String(psramSize / 1024) + " KB</code></p>";
+    }
+
+    // Flash info
+    const uint32_t flashSize = ESP.getFlashChipSize();
+    body += "<p>Flash: <code>" + String(flashSize / 1024 / 1024) + " MB</code>";
+    body += " | speed <code>" + String(ESP.getFlashChipSpeed() / 1000000) + " MHz</code></p>";
+  }
+
+  // Uptime
+  {
+    const uint32_t uptimeS = millis() / 1000UL;
+    const uint32_t days = uptimeS / 86400UL;
+    const uint32_t hours = (uptimeS % 86400UL) / 3600UL;
+    const uint32_t mins = (uptimeS % 3600UL) / 60UL;
+    const uint32_t secs = uptimeS % 60UL;
+
+    String uptimeStr;
+    if (days > 0) uptimeStr = String(days) + "d " + String(hours) + "h " + String(mins) + "m";
+    else if (hours > 0) uptimeStr = String(hours) + "h " + String(mins) + "m " + String(secs) + "s";
+    else if (mins > 0) uptimeStr = String(mins) + "m " + String(secs) + "s";
+    else uptimeStr = String(secs) + "s";
+
+    body += "<p>Uptime: <code>" + uptimeStr + "</code></p>";
+  }
+
   body += "<p>WiFi: <code>" + String(wifiConnected() ? "connected" : "not connected") + "</code>";
   body += " | BLE scan: <code>on</code> (" + String(g_activeScan ? "active" : "passive") + ")";
   body += "</p>";
@@ -1157,6 +1230,60 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</div>";
   };
   renderTabSystem();
+
+  // JavaScript for real-time send status updates
+  body += "<script>";
+  body += "function setupSendButton(btnId, endpoint, statusEndpoint, statusId) {";
+  body += "  const btn = document.getElementById(btnId);";
+  body += "  const status = document.getElementById(statusId);";
+  body += "  if (!btn) return;";
+  body += "  btn.addEventListener('click', async () => {";
+  body += "    btn.disabled = true;";
+  body += "    status.textContent = 'Sending...';";
+  body += "    status.style.color = 'var(--muted)';";
+  body += "    try {";
+  body += "      const resp = await fetch(endpoint, {method: 'POST'});";
+  body += "      if (!resp.ok) throw new Error('Send failed');";
+  body += "      let attempts = 0;";
+  body += "      const checkStatus = setInterval(async () => {";
+  body += "        attempts++;";
+  body += "        if (attempts > 30) {"; // 30 seconds max
+  body += "          clearInterval(checkStatus);";
+  body += "          status.textContent = 'Timeout';";
+  body += "          status.style.color = '#e74c3c';";
+  body += "          btn.disabled = false;";
+  body += "          setTimeout(() => { status.textContent = ''; }, 5000);";
+  body += "          return;";
+  body += "        }";
+  body += "        const st = await fetch(statusEndpoint);";
+  body += "        const code = parseInt(await st.text());";
+  body += "        if (code === 2) {"; // Success
+  body += "          clearInterval(checkStatus);";
+  body += "          status.textContent = 'Sent successfully!';";
+  body += "          status.style.color = '#27ae60';";
+  body += "          btn.disabled = false;";
+  body += "          setTimeout(() => { status.textContent = ''; }, 5000);";
+  body += "        } else if (code === 3) {"; // Failed
+  body += "          clearInterval(checkStatus);";
+  body += "          status.textContent = 'Send failed';";
+  body += "          status.style.color = '#e74c3c';";
+  body += "          btn.disabled = false;";
+  body += "          setTimeout(() => { status.textContent = ''; }, 5000);";
+  body += "        }";
+  body += "      }, 1000);"; // Poll every 1 second
+  body += "    } catch (e) {";
+  body += "      status.textContent = 'Error: ' + e.message;";
+  body += "      status.style.color = '#e74c3c';";
+  body += "      btn.disabled = false;";
+  body += "      setTimeout(() => { status.textContent = ''; }, 5000);";
+  body += "    }";
+  body += "  });";
+  body += "}";
+  body += "setupSendButton('sendMqtt', '/send_mqtt', '/send_status_mqtt', 'statusMqtt');";
+  body += "setupSendButton('sendServer', '/send_server', '/send_status_server', 'statusServer');";
+  body += "setupSendButton('sendLocalServer', '/send_local_server', '/send_status_local_server', 'statusLocalServer');";
+  body += "setupSendButton('sendWebhook', '/send_webhook', '/send_status_webhook', 'statusWebhook');";
+  body += "</script>";
 
   body += "</div></body></html>";
   return body;

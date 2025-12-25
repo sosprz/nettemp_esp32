@@ -1,1 +1,8 @@
-build
+# Build artifacts
+build/
+
+# Firmware binaries (keep directory, ignore .bin files)
+#firmware/*.bin
+
+# macOS
+.DS_Store

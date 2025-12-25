@@ -93,19 +93,29 @@ bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
   const bool isHttps = endpoint.startsWith("https://");
 
   HTTPClient http;
+  bool beginOk = false;
   if (isHttps) {
     // HTTPS - use secure client
-    if (!http.begin(client, endpoint)) {
+    beginOk = http.begin(client, endpoint);
+    if (!beginOk) {
       Serial.println("Server send failed: HTTPS begin failed");
-      return false;
     }
   } else {
     // HTTP - don't use secure client
-    if (!http.begin(endpoint)) {
+    beginOk = http.begin(endpoint);
+    if (!beginOk) {
       Serial.println("Server send failed: HTTP begin failed");
-      return false;
     }
   }
+
+  if (!beginOk) {
+    http.end();  // Ensure cleanup even on begin failure
+    return false;
+  }
+
+  // Set timeouts to prevent indefinite hanging (critical for async operation)
+  http.setConnectTimeout(5000);  // 5 second connection timeout
+  http.setTimeout(10000);         // 10 second total timeout
 
   http.addHeader("Content-Type", "application/json");
   if (batch.apiKey.length()) {

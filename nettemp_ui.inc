@@ -3,7 +3,11 @@ static String keyboardReadWord() {
   if (!M5Cardputer.Keyboard.isChange()) return "";
   if (!M5Cardputer.Keyboard.isPressed()) return "";
   auto state = M5Cardputer.Keyboard.keysState();
-  if (!state.word.empty()) return String(state.word.c_str());
+  if (!state.word.empty()) {
+    String result;
+    for (char c : state.word) result += c;
+    return result;
+  }
   return "";
 }
 
@@ -16,7 +20,7 @@ static bool keyboardPressedEnter() {
 static bool keyboardPressedEsc() {
   if (!M5Cardputer.Keyboard.isChange()) return false;
   auto state = M5Cardputer.Keyboard.keysState();
-  return state.esc;
+  return state.fn;  // Use fn key as ESC/back
 }
 
 static bool keyboardPressedDel() {
@@ -61,7 +65,7 @@ static bool editText(const char* title, String& value, bool secret = false) {
       M5Cardputer.Display.setCursor(0, 0);
       M5Cardputer.Display.printf("%s\n", title);
       M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
-      M5Cardputer.Display.printf("Enter=OK  Esc=Back  Del=Backspace\n\n");
+      M5Cardputer.Display.printf("Enter=OK  Fn=Back  Del=Backspace\n\n");
 
       M5Cardputer.Display.setTextColor(COLOR_FG, COLOR_BG);
       String shown = buf;
@@ -177,7 +181,7 @@ static void viewMainMenu() {
   };
   drawMenu("NETTEMP (Cardputer)", items, g_menuIndex);
 
-  drawFooter("BtnA/BtnB=nav  Enter=select");
+  drawFooter("BtnA=next  Enter=select  Fn=back");
 }
 #endif
 
@@ -229,8 +233,7 @@ static void wifiScanAndSelect() {
       WiFi.scanDelete();
       return;
     }
-    if (M5Cardputer.BtnA.wasPressed()) idx = (idx - 1 + n) % (n == 0 ? 1 : n);
-    if (M5Cardputer.BtnB.wasPressed()) idx = (idx + 1) % (n == 0 ? 1 : n);
+    if (M5Cardputer.BtnA.wasPressed()) idx = (idx + 1) % (n == 0 ? 1 : n);
 
     if (keyboardPressedEnter()) {
       if (n == 0) return;
@@ -249,7 +252,7 @@ static void wifiScanAndSelect() {
     drawHeader("WiFi: select network");
     M5Cardputer.Display.setCursor(0, 14);
     M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
-    M5Cardputer.Display.print("BtnA/BtnB=nav  Enter=select  Esc=back\n");
+    M5Cardputer.Display.print("BtnA=next  Enter=select  Fn=back\n");
     M5Cardputer.Display.drawFastHLine(0, 28, M5Cardputer.Display.width(), COLOR_MUTED);
 
     if (n == 0) {
@@ -311,7 +314,7 @@ static void viewMqttSetup() {
   M5Cardputer.Display.printf("Interval: %lus\n", (unsigned long)(g_cfg.mqttIntervalMs / 1000));
   M5Cardputer.Display.printf("BLE scan: %s\n", g_activeScan ? "ACTIVE" : "PASSIVE");
 #endif
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
 }
 #endif
 
@@ -364,7 +367,7 @@ static void viewServerSetup() {
   M5Cardputer.Display.printf("API key: %s\n", g_cfg.serverApiKey.length() ? "set" : "(not set)");
   M5Cardputer.Display.printf("Interval: %lus\n", (unsigned long)(g_cfg.serverIntervalMs / 1000));
   M5Cardputer.Display.printf("I2C device id: %s\n", g_cfg.deviceId.c_str());
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
 }
 
 static void editServerConfig() {
@@ -426,7 +429,7 @@ static void viewPairQr() {
   M5Cardputer.Display.setCursor(0, y + size + 6);
   M5Cardputer.Display.printf("name: %s\n", g_cfg.deviceId.c_str());
   M5Cardputer.Display.printf("token: %s...\n", g_cfg.serverApiKey.substring(0, 10).c_str());
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
 #endif
 }
 
@@ -436,7 +439,7 @@ static void viewScanBle() {
   M5Cardputer.Display.setCursor(0, 14);
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
   M5Cardputer.Display.printf("Mode: %s  Enter=toggle\n", g_activeScan ? "ACTIVE" : "PASSIVE");
-  M5Cardputer.Display.printf("BtnA/BtnB=nav  Space=select  Esc=back\n");
+  M5Cardputer.Display.printf("BtnA=next  Space=select  Fn=back\n");
   M5Cardputer.Display.drawFastHLine(0, 40, M5Cardputer.Display.width(), COLOR_MUTED);
 
   const auto idx = buildBleSortedIndex();
@@ -487,14 +490,14 @@ static void viewScanI2c() {
   M5Cardputer.Display.setCursor(0, 14);
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
   M5Cardputer.Display.print("Disabled at compile time.\nSet NETTEMP_ENABLE_I2C=1.\n");
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
   return;
 #else
   M5Cardputer.Display.fillScreen(COLOR_BG);
   drawHeader("I2C Sensors (BMP280/TMP102/SHT3x)");
   M5Cardputer.Display.setCursor(0, 14);
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
-  M5Cardputer.Display.print("BtnA/BtnB=nav  Space=select  Enter=rescan  Esc=back\n");
+  M5Cardputer.Display.print("BtnA=next  Space=select  Enter=rescan  Fn=back\n");
 
   if (g_i2cSensors.empty()) {
     M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
@@ -502,7 +505,7 @@ static void viewScanI2c() {
     M5Cardputer.Display.print("(no known I2C sensors found)");
     M5Cardputer.Display.setCursor(0, 48);
     M5Cardputer.Display.print("Try: BMP280 0x76/0x77, TMP102 0x48..0x4B, SHT3x 0x44/0x45");
-    drawFooter("Esc=back");
+    drawFooter("Fn=back");
     return;
   }
 
@@ -547,7 +550,7 @@ static void viewScanI2c() {
       M5Cardputer.Display.printf("%c 0x%02X %-5s (no read)", sel, s.address, name);
     }
   }
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
 #endif
 }
 
@@ -561,7 +564,7 @@ static void viewAbout() {
   M5Cardputer.Display.print("BLE (ATC/PVVX) -> Screen/MQTT/Cloud\n\n");
   M5Cardputer.Display.printf("WiFi: %s\n", wifiConnected() ? WiFi.localIP().toString().c_str() : "(not connected)");
   M5Cardputer.Display.printf("BLE scan: %s\n", g_activeScan ? "ACTIVE" : "PASSIVE");
-  drawFooter("Esc=back");
+  drawFooter("Fn=back");
 }
 
 static void handleKeys() {
@@ -572,8 +575,7 @@ static void handleKeys() {
 
   if (g_view == View::MainMenu) {
     const int menuCount = 8;
-    if (M5Cardputer.BtnA.wasPressed()) g_menuIndex = (g_menuIndex - 1 + menuCount) % menuCount;
-    if (M5Cardputer.BtnB.wasPressed()) g_menuIndex = (g_menuIndex + 1) % menuCount;
+    if (M5Cardputer.BtnA.wasPressed()) g_menuIndex = (g_menuIndex + 1) % menuCount;
     if (keyboardPressedEnter()) {
       switch (g_menuIndex) {
         case 0: g_view = View::ScanBle; break;
@@ -596,8 +598,7 @@ static void handleKeys() {
 
   if (g_view == View::ScanBle) {
     const int count = (int)buildBleSortedIndex().size();
-    if (M5Cardputer.BtnA.wasPressed() && count > 0) g_bleCursor = (g_bleCursor - 1 + count) % count;
-    if (M5Cardputer.BtnB.wasPressed() && count > 0) g_bleCursor = (g_bleCursor + 1) % count;
+    if (M5Cardputer.BtnA.wasPressed() && count > 0) g_bleCursor = (g_bleCursor + 1) % count;
     if (keyboardPressedEnter()) {
       g_activeScan = !g_activeScan;
       prefsSave();
@@ -618,8 +619,7 @@ static void handleKeys() {
 
   if (g_view == View::ScanI2c) {
     const int count = (int)g_i2cSensors.size();
-    if (M5Cardputer.BtnA.wasPressed() && count > 0) g_i2cCursor = (g_i2cCursor - 1 + count) % count;
-    if (M5Cardputer.BtnB.wasPressed() && count > 0) g_i2cCursor = (g_i2cCursor + 1) % count;
+    if (M5Cardputer.BtnA.wasPressed() && count > 0) g_i2cCursor = (g_i2cCursor + 1) % count;
     if (keyboardPressedSpace() && count > 0) {
       g_i2cSensors[g_i2cCursor].selected = !g_i2cSensors[g_i2cCursor].selected;
     }

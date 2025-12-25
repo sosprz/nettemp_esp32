@@ -278,6 +278,18 @@ uint32_t g_lastWebhookSendMs = 0;
 uint32_t g_lastSerialRxMs = 0;
 bool g_i2cBegun = false;
 
+// Async flags for web-triggered channel sends (prevents blocking web server)
+volatile bool g_pendingSendMqtt = false;
+volatile bool g_pendingSendServer = false;
+volatile bool g_pendingSendLocalServer = false;
+volatile bool g_pendingSendWebhook = false;
+
+// Send status tracking for web UI feedback (0=idle, 1=sending, 2=success, 3=failed)
+volatile uint8_t g_sendStatusMqtt = 0;
+volatile uint8_t g_sendStatusServer = 0;
+volatile uint8_t g_sendStatusLocalServer = 0;
+volatile uint8_t g_sendStatusWebhook = 0;
+
 enum class View {
   MainMenu,
   ScanBle,
