@@ -260,10 +260,11 @@ static void appendGpioFieldCheckboxes(String& body, const char* prefix, uint32_t
   appendCheckbox(body, String(prefix) + "volt", (mask & SRV_GPIO_VOLT) != 0, "volt");
   appendCheckbox(body, String(prefix) + "soil_raw", (mask & SRV_GPIO_SOIL_RAW) != 0, "soil_raw");
   appendCheckbox(body, String(prefix) + "soil_pct", (mask & SRV_GPIO_SOIL_PCT) != 0, "soil_pct");
-  appendCheckbox(body, String(prefix) + "cm", (mask & SRV_GPIO_DIST_CM) != 0, "cm");
+  appendCheckbox(body, String(prefix) + "dist", (mask & SRV_GPIO_DIST) != 0, "dist");
 }
 
 static uint32_t parseBleMask(const char* prefix, uint32_t defaultMask) {
+  (void)defaultMask;  // Unused - user has full control via checkboxes
   uint32_t mask = 0;
   if (g_webServer.hasArg(String(prefix) + "tempc")) mask |= SRV_BLE_TEMPC;
   if (g_webServer.hasArg(String(prefix) + "tempf")) mask |= SRV_BLE_TEMPF;
@@ -271,22 +272,22 @@ static uint32_t parseBleMask(const char* prefix, uint32_t defaultMask) {
   if (g_webServer.hasArg(String(prefix) + "batt")) mask |= SRV_BLE_BATT;
   if (g_webServer.hasArg(String(prefix) + "volt")) mask |= SRV_BLE_VOLT;
   if (g_webServer.hasArg(String(prefix) + "rssi")) mask |= SRV_BLE_RSSI;
-  if (mask == 0) mask = defaultMask;
   return mask;
 }
 
 #if NETTEMP_ENABLE_I2C
 static uint32_t parseI2cMask(const char* prefix, uint32_t defaultMask) {
+  (void)defaultMask;  // Unused - user has full control via checkboxes
   uint32_t mask = 0;
   if (g_webServer.hasArg(String(prefix) + "tempc")) mask |= SRV_I2C_TEMPC;
   if (g_webServer.hasArg(String(prefix) + "hum")) mask |= SRV_I2C_HUM;
   if (g_webServer.hasArg(String(prefix) + "press")) mask |= SRV_I2C_PRESS;
-  if (mask == 0) mask = defaultMask;
   return mask;
 }
 #endif
 
 static uint32_t parseGpioMask(const char* prefix, uint32_t defaultMask) {
+  (void)defaultMask;  // Unused - user has full control via checkboxes
   uint32_t mask = 0;
   if (g_webServer.hasArg(String(prefix) + "tempc")) mask |= SRV_GPIO_TEMPC;
   if (g_webServer.hasArg(String(prefix) + "tempf")) mask |= SRV_GPIO_TEMPF;
@@ -295,8 +296,7 @@ static uint32_t parseGpioMask(const char* prefix, uint32_t defaultMask) {
   if (g_webServer.hasArg(String(prefix) + "volt")) mask |= SRV_GPIO_VOLT;
   if (g_webServer.hasArg(String(prefix) + "soil_raw")) mask |= SRV_GPIO_SOIL_RAW;
   if (g_webServer.hasArg(String(prefix) + "soil_pct")) mask |= SRV_GPIO_SOIL_PCT;
-  if (g_webServer.hasArg(String(prefix) + "cm")) mask |= SRV_GPIO_DIST_CM;
-  if (mask == 0) mask = defaultMask;
+  if (g_webServer.hasArg(String(prefix) + "dist")) mask |= SRV_GPIO_DIST;
   return mask;
 }
 

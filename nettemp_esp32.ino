@@ -1506,8 +1506,8 @@ static void tickSendMqtt() {
         }
         if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
           const String base = dev + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-          if (g_mqttGpioFields & SRV_GPIO_DIST_CM) {
-            publishReading(base + "_cm", "distance", "distance", String(g_hcsr04Cm, 1));
+          if (g_mqttGpioFields & SRV_GPIO_DIST) {
+            publishReading(base + "_dist", "distance", "distance", String(g_hcsr04Cm, 1));
           }
         }
       }
@@ -1888,7 +1888,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
     }
 
     // HC-SR04 sensor
-    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm) && (cfg.gpioFieldMask & SRV_GPIO_DIST_CM)) {
+    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm) && (cfg.gpioFieldMask & SRV_GPIO_DIST)) {
       g_prefs.begin("nettemp", true);
       const String hcName = g_prefs.getString("name_hcsr04", "");
       g_prefs.end();
@@ -2247,9 +2247,9 @@ static void tickSendWebhook() {
     }
     if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
       const String base = deviceId + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
-      if (g_webhookGpioFields & SRV_GPIO_DIST_CM) {
+      if (g_webhookGpioFields & SRV_GPIO_DIST) {
         batch.readings.push_back(NettempReading{
-          .sensorId = base + "_cm",
+          .sensorId = base + "_dist",
           .value = g_hcsr04Cm,
           .sensorType = "distance",
           .unit = "cm",

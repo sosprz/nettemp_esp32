@@ -192,11 +192,11 @@ constexpr uint32_t SRV_GPIO_BATT = 1u << 3;
 constexpr uint32_t SRV_GPIO_VOLT = 1u << 4;
 constexpr uint32_t SRV_GPIO_SOIL_RAW = 1u << 5;
 constexpr uint32_t SRV_GPIO_SOIL_PCT = 1u << 6;
-constexpr uint32_t SRV_GPIO_DIST_CM = 1u << 7;
+constexpr uint32_t SRV_GPIO_DIST = 1u << 7;
 constexpr uint32_t SRV_GPIO_DEFAULT =
-  (SRV_GPIO_TEMPC | SRV_GPIO_TEMPF | SRV_GPIO_HUM | SRV_GPIO_BATT | SRV_GPIO_VOLT |
-   SRV_GPIO_SOIL_RAW | SRV_GPIO_SOIL_PCT | SRV_GPIO_DIST_CM);
-constexpr uint32_t SRV_GPIO_DEFAULT_LOCAL = SRV_GPIO_DEFAULT & ~(SRV_GPIO_TEMPF | SRV_GPIO_VOLT);
+  (SRV_GPIO_TEMPC | SRV_GPIO_HUM | SRV_GPIO_BATT | SRV_GPIO_VOLT |
+   SRV_GPIO_SOIL_RAW | SRV_GPIO_SOIL_PCT | SRV_GPIO_DIST);
+constexpr uint32_t SRV_GPIO_DEFAULT_LOCAL = SRV_GPIO_DEFAULT & ~SRV_GPIO_VOLT;
 uint32_t g_srvGpioFields = SRV_GPIO_DEFAULT;
 uint32_t g_mqttGpioFields = SRV_GPIO_DEFAULT;
 uint32_t g_webhookGpioFields = SRV_GPIO_DEFAULT;

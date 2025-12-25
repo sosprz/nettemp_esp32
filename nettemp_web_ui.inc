@@ -350,7 +350,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
         if (showBatt) body += "<th>batt</th>";
         if (showSoilRaw) body += "<th>soil_raw</th>";
         if (showSoilPct) body += "<th>soil_pct</th>";
-        if (showHcDist) body += "<th>dist_cm</th>";
+        if (showHcDist) body += "<th>dist</th>";
         body += "</tr>";
 
         if (g_cfg.dsEnabled) {
@@ -881,7 +881,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
 #endif
 
   body += "<h4 style='margin:12px 0 6px'>GPIO sensors</h4>";
-  body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>tempf</th><th>hum</th><th>volt</th><th>batt</th><th>soil_raw</th><th>soil_pct</th><th>dist_cm</th></tr>";
+  body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>tempf</th><th>hum</th><th>volt</th><th>batt</th><th>soil_raw</th><th>soil_pct</th><th>dist</th></tr>";
   if (g_cfg.dhtEnabled) {
     const String nameVal = prefGetName("name_dht", String("DHT") + String(g_cfg.dhtType) + " GPIO" + String(g_cfg.dhtPin));
     body += "<tr>";

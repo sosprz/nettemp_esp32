@@ -64,7 +64,7 @@ esptool.py write_flash 0x10000 firmware/nettemp_esp32_cardputer_*.bin
   - URL: `http://192.168.4.1/`
 - After WiFi connects: open `http://<device-ip>/` (Basic Auth) to configure BLE/I2C/MQTT/Server.
 - On device: `BtnA/BtnB` move, `Enter` select, `Esc` back.
-- Channels JSON fields are selectable per transport for BLE/I2C/GPIO (GPIO includes `tempc`, `tempf`, `hum`, `batt`, `volt`, `soil_raw`, `soil_pct`, `cm`).
+- **All JSON fields are fully customizable** per transport (Server/LocalServer/MQTT/Webhook) via web UI checkboxes. You have complete control - uncheck any field to disable it, including temperature.
 
 ### Sensor ID Format Reference
 
@@ -74,15 +74,17 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 
 **Sensor ID Formats by Type:**
 
-| Sensor Type | Base Format | Example | Field Suffixes |
-|------------|-------------|---------|----------------|
-| **BLE** | `{deviceId}-ble_{MAC}` | `nettemp_esp32-ble_A4C138ABCDEF` | `_temp`, `_tempf`, `_hum`, `_batt`, `_volt`, `_rssi` |
+| Sensor Type | Base Format | Example | Initial Field Suffixes* |
+|------------|-------------|---------|-------------------------|
+| **BLE** | `{deviceId}-ble_{MAC}` | `nettemp_esp32-ble_A4C138ABCDEF` | `_temp`, `_hum`, `_batt` |
 | **I2C** | `{deviceId}-i2c_0x{ADDR}_{TYPE}` | `nettemp_esp32-i2c_0x76_bme280` | `_temp`, `_hum`, `_press` |
-| **DS18B20** | `{deviceId}-ds_{FAMILY}_{SERIAL}` | `nettemp_esp32-ds_28_000003253425` | `_temp`, `_tempf` |
-| **DHT** | `{deviceId}-dht{TYPE}_gpio{PIN}` | `nettemp_esp32-dht22_gpio16` | `_temp`, `_tempf`, `_hum` |
+| **DS18B20** | `{deviceId}-ds_{FAMILY}_{SERIAL}` | `nettemp_esp32-ds_28_000003253425` | `_temp` |
+| **DHT** | `{deviceId}-dht{TYPE}_gpio{PIN}` | `nettemp_esp32-dht22_gpio16` | `_temp`, `_hum` |
 | **VBAT** | `{deviceId}-vbat` | `nettemp_esp32-vbat` | `_batt`, `_volt` |
 | **Soil** | `{deviceId}-soil_adc{PIN}` | `nettemp_esp32-soil_adc34` | `_raw`, `_pct` |
-| **HC-SR04** | `{deviceId}-hcsr04_gpio{TRIG}_{ECHO}` | `nettemp_esp32-hcsr04_gpio13_14` | `_cm` (MQTT/Webhook), `_dist` (Server/LocalServer) |
+| **HC-SR04** | `{deviceId}-hcsr04_gpio{TRIG}_{ECHO}` | `nettemp_esp32-hcsr04_gpio13_14` | `_dist` |
+
+*Initial values on first boot. **All fields are fully customizable** via web UI checkboxes - you can enable/disable any field.
 
 **Format Details:**
 
@@ -94,7 +96,7 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 - **GPIO Pins**: Actual GPIO numbers used
 - **ADC Pin**: ADC-capable pin number (e.g., `34`, `35`)
 
-**Field Suffix Reference:**
+**Available Field Suffixes (all optional, configurable via web UI):**
 
 - `_temp` / `_tempc` - Temperature in Celsius (°C)
 - `_tempf` - Temperature in Fahrenheit (°F)
@@ -105,7 +107,7 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 - `_press` - Pressure (hPa)
 - `_raw` - Raw ADC value (soil moisture)
 - `_pct` - Percentage value (soil moisture)
-- `_cm` / `_dist` - Distance in centimeters
+- `_dist` - Distance in centimeters
 
 ### UI build selection
 - Cardputer UI auto-enables when Cardputer board is detected.
