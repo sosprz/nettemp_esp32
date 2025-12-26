@@ -208,8 +208,9 @@ uint32_t g_localGpioFields = SRV_GPIO_DEFAULT_LOCAL;
 std::vector<SensorRow> g_sensors;
 bool g_bleAutoScan = true;
 bool g_activeScan = false;
+bool g_bleStrictMode = false;  // If true, only track selected sensors (ignore all others)
 int g_bleCursor = 0;
-uint8_t g_bleMaxResults = 20;
+uint8_t g_bleMaxResults = 50;
 bool g_bleParseMfg = NETTEMP_BLE_PARSE_MFG;
 
 #if NETTEMP_ENABLE_I2C
@@ -293,6 +294,13 @@ volatile uint8_t g_sendStatusServer = 0;
 volatile uint8_t g_sendStatusLocalServer = 0;
 volatile uint8_t g_sendStatusWebhook = 0;
 
+// Crash tracking (saved to NVS for debugging panics/reboots)
+String g_crashReason;
+String g_crashLocation;
+uint32_t g_crashUptime = 0;
+uint32_t g_crashFreeHeap = 0;
+bool g_hasCrashInfo = false;
+
 enum class View {
   MainMenu,
   ScanBle,
@@ -337,6 +345,10 @@ static void wifiWaitConnected(uint32_t timeoutMs);
 static void powerSleepCycleMaybe();
 static void powerEnterDeepSleep(uint32_t sleepSeconds);
 static void vbatTick();
+static void crashSaveBreadcrumb(const char* reason, const char* location);
+static void crashCheckAndLoad();
+static void crashClear();
+static String crashGetLog();
 static bool vbatReadVolts(float& outV);
 static int vbatToPercent(float vbatV);
 
@@ -614,6 +626,7 @@ static void prefsLoad() {
 
   g_bleAutoScan = g_prefs.getBool("bleAuto", true);
   g_activeScan = g_prefs.getBool("bleAct", false);
+  g_bleStrictMode = g_prefs.getBool("bleStrict", false);
   {
     const uint32_t v = g_prefs.getUInt("bleMax", (uint32_t)g_bleMaxResults);
     if (v < 5) g_bleMaxResults = 5;
@@ -788,6 +801,7 @@ static void prefsSave() {
 
   g_prefs.putBool("bleAuto", g_bleAutoScan);
   g_prefs.putBool("bleAct", g_activeScan);
+  g_prefs.putBool("bleStrict", g_bleStrictMode);
   g_prefs.putUInt("bleMax", (uint32_t)g_bleMaxResults);
   g_prefs.putBool("bleMfg", g_bleParseMfg);
 #if NETTEMP_ENABLE_PORTAL
@@ -811,6 +825,83 @@ static void prefsSave() {
   }
 #endif
   g_prefs.end();
+}
+
+// ============================================================================
+// CRASH TRACKING
+// ============================================================================
+
+static void crashSaveBreadcrumb(const char* reason, const char* location) {
+  Preferences prefs;
+  prefs.begin("crash", false);
+  prefs.putString("reason", reason);
+  prefs.putString("location", location);
+  prefs.putUInt("uptime", millis());
+  prefs.putUInt("heap", ESP.getFreeHeap());
+  prefs.end();
+}
+
+static void crashCheckAndLoad() {
+  Preferences prefs;
+  prefs.begin("crash", true);
+  g_crashReason = prefs.getString("reason", "");
+  if (g_crashReason.length() > 0) {
+    g_hasCrashInfo = true;
+    g_crashLocation = prefs.getString("location", "");
+    g_crashUptime = prefs.getUInt("uptime", 0);
+    g_crashFreeHeap = prefs.getUInt("heap", 0);
+  } else {
+    g_hasCrashInfo = false;
+  }
+  prefs.end();
+}
+
+static void crashClear() {
+  Preferences prefs;
+  prefs.begin("crash", false);
+  prefs.clear();
+  prefs.end();
+  g_hasCrashInfo = false;
+  g_crashReason = "";
+  g_crashLocation = "";
+  g_crashUptime = 0;
+  g_crashFreeHeap = 0;
+}
+
+static String crashGetLog() {
+  if (!g_hasCrashInfo) return "";
+
+  String log;
+  log.reserve(512);
+  log += "=== ESP32 CRASH LOG ===\n\n";
+  log += "Device ID: " + g_cfg.deviceId + "\n";
+  log += "Crash Reason: " + g_crashReason + "\n";
+  log += "Location: " + g_crashLocation + "\n";
+  log += "Uptime at crash: " + String(g_crashUptime / 1000) + " seconds\n";
+  log += "Free heap at crash: " + String(g_crashFreeHeap) + " bytes\n";
+  log += "Min free heap: " + String(ESP.getMinFreeHeap()) + " bytes\n";
+  log += "Heap size: " + String(ESP.getHeapSize()) + " bytes\n\n";
+
+  const auto rr = esp_reset_reason();
+  log += "Reset reason: ";
+  if (rr == ESP_RST_UNKNOWN) log += "unknown";
+  else if (rr == ESP_RST_POWERON) log += "poweron";
+  else if (rr == ESP_RST_EXT) log += "ext";
+  else if (rr == ESP_RST_SW) log += "sw";
+  else if (rr == ESP_RST_PANIC) log += "panic";
+  else if (rr == ESP_RST_INT_WDT) log += "int_wdt";
+  else if (rr == ESP_RST_TASK_WDT) log += "task_wdt";
+  else if (rr == ESP_RST_WDT) log += "wdt";
+  else if (rr == ESP_RST_DEEPSLEEP) log += "deepsleep";
+  else if (rr == ESP_RST_BROWNOUT) log += "brownout";
+  else if (rr == ESP_RST_SDIO) log += "sdio";
+  else log += String((int)rr);
+  log += "\n\n";
+
+  log += "Generated: " + String(millis() / 1000) + "s after current boot\n";
+  log += "======================\n";
+
+  return log;
 }
 
 static void i2cInitBus() {

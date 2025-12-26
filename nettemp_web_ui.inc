@@ -57,7 +57,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
                 "input{max-width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:#0d1628;color:var(--text)}"
                 "input[type=checkbox]{width:auto}"
                 ".row{display:flex;gap:10px} .row>div{flex:1}"
-                "button{background:var(--accent);border:none;color:white;padding:10px 14px;border-radius:10px;font-weight:600}"
+                "button{background:var(--accent);border:none;color:white;padding:3px 8px;border-radius:10px;font-weight:600;font-size:12px}"
                 ".tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}"
                 "table{border-collapse:collapse;width:100%;margin:8px 0;border:1px solid var(--border)}"
                 "td,th{border-top:1px solid var(--border);padding:8px;font-size:14px;white-space:nowrap}"
@@ -523,13 +523,21 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<div class='card tab hidden' id='tab-ble'>";
   body += "<h3>BLE</h3>";
   body += "<form method='POST' action='/save_ble'>";
-  body += "<label><input type='checkbox' name='bleAuto' value='1' " + String(g_bleAutoScan ? "checked" : "") + "> Enable autoscan</label>";
-  body += "<label><input type='checkbox' name='bleActive' value='1' " + String(g_activeScan ? "checked" : "") + "> Active scan (more power, more data)</label>";
+  body += "<label><input type='checkbox' name='bleAuto' value='1' " + String(g_bleAutoScan ? "checked" : "") + "> Enable</label>";
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
   body += "</form>";
 
-  body += "<h3 style='margin-top:16px'>BLE devices</h3>";
-  body += "<p>Manual overrides persist across reboot (use <code>Manual</code> checkbox).</p>";
+  body += "<h3 style='margin-top:16px;margin-bottom:8px'>BLE devices</h3>";
+  body += "<div style='display:flex;gap:6px;align-items:center;margin-bottom:12px'>";
+  body += "<label style='margin:0;display:flex;gap:4px;align-items:center'>";
+  body += "<span style='font-size:13px'>Max:</span>";
+  body += "<input type='number' min='5' max='200' value='" + String((unsigned)g_bleMaxResults) + "' id='bleMaxInput' style='width:55px;padding:3px;font-size:13px'/>";
+  body += "</label>";
+  body += "<button type='button' onclick='fetch(\"/save_ble_max?max=\"+document.getElementById(\"bleMaxInput\").value,{method:\"POST\"}).then(()=>location.reload())'>Save</button>";
+  body += "<button type='button' onclick='location.reload()'>🔍 Scan</button>";
+  body += "<button type='button' onclick='if(confirm(\"Remove all unselected sensors?\"))fetch(\"/clean_sensors\",{method:\"POST\"}).then(()=>location.reload())'>🗑️ Clean</button>";
+  body += "</div>";
+  body += "<p style='margin:0 0 12px;font-size:13px;color:var(--muted)'>Manual overrides persist across reboot (use <code>Manual</code> checkbox).</p>";
   body += "<form method='POST' action='/save_sensors'>";
   body += "<div class='tablewrap'><table><tr><th>Send</th><th>Manual</th><th>MAC</th><th>Name</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>batt</th></tr>";
   const uint32_t nowMs = millis();
@@ -712,6 +720,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
           "<li><code>TMP102</code> (0x48-0x4B)</li>"
           "<li><code>SHT3X</code> (0x44/0x45)</li>"
           "<li><code>HTU21D/SHT21/SI7021</code> (0x40)</li>"
+          "<li><code>AHT10/20/21/30</code> (0x38)</li>"
           "</ul>";
 #else
   body += "<p>I2C support is disabled in this build (<code>NETTEMP_ENABLE_I2C=0</code>).</p>";
@@ -731,7 +740,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<label><input type='checkbox' name='dsEn' value='1' " + String(g_cfg.dsEnabled ? "checked" : "") + "> Enable DS18B20 (1-Wire)</label>";
   body += "<label>DS18B20 GPIO</label><input name='dsPin' value='" + String(g_cfg.dsPin) + "'/>";
   body += "<p>Detected DS18B20: <code>" + String((unsigned long)g_dsRoms.size()) + "</code> ";
-  body += "<button type='submit' name='dsScan' value='1' style='padding:2px 8px;font-size:0.9em'>Scan Now</button> ";
+  body += "<button type='submit' name='dsScan' value='1'>Scan Now</button> ";
   body += "<small style='color:var(--muted)'>(Scans without saving)</small></p>";
   if (!g_dsRoms.empty()) {
     Serial.printf("Web: Building GPIO form with %u DS18B20 sensors\n", (unsigned)g_dsRoms.size());
@@ -1282,6 +1291,21 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p style='margin:8px 0 12px;color:var(--muted);font-size:13px'>Timeout before watchdog resets ESP32 if loop task blocks (requires reboot to apply)</p>";
   body += "<button type='submit'>Save Watchdog Config</button>";
   body += "</form>";
+
+  // Crash log section
+  if (g_hasCrashInfo) {
+    body += "<h3 style='margin-top:20px;color:var(--warn)'>&#9888; Crash Log Detected</h3>";
+    body += "<div style='background:var(--bg-secondary);padding:12px;border-radius:4px;margin-bottom:12px'>";
+    body += "<p style='margin:4px 0'><strong>Reason:</strong> <code>" + g_crashReason + "</code></p>";
+    body += "<p style='margin:4px 0'><strong>Location:</strong> <code>" + g_crashLocation + "</code></p>";
+    body += "<p style='margin:4px 0'><strong>Uptime at crash:</strong> <code>" + String((unsigned long)(g_crashUptime / 1000)) + "s</code></p>";
+    body += "<p style='margin:4px 0'><strong>Free heap at crash:</strong> <code>" + String((unsigned long)g_crashFreeHeap) + " bytes</code></p>";
+    body += "</div>";
+    body += "<div class='row' style='align-items:center;gap:10px'>";
+    body += "<a href='/crash.txt' download='crash.txt' style='text-decoration:none'><button type='button'>Download Crash Log</button></a>";
+    body += "<form method='POST' action='/crash/clear' style='margin:0' onsubmit=\"return confirm('Clear crash log?');\"><button type='submit'>Clear Crash Log</button></form>";
+    body += "</div>";
+  }
 
   body += "<div class='row' style='align-items:center;gap:10px;margin-top:16px'>"
           "<form method='POST' action='/reboot'><button type='submit'>Reboot</button></form>"

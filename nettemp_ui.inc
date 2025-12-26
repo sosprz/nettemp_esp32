@@ -312,7 +312,6 @@ static void viewMqttSetup() {
   M5Cardputer.Display.printf("Broker: %s:%u\n", g_cfg.mqttHost.c_str(), g_cfg.mqttPort);
   M5Cardputer.Display.printf("Auth: %s\n", (g_cfg.mqttUser.length() || g_cfg.mqttPass.length()) ? "set" : "(none)");
   M5Cardputer.Display.printf("Interval: %lus\n", (unsigned long)(g_cfg.mqttIntervalMs / 1000));
-  M5Cardputer.Display.printf("BLE scan: %s\n", g_activeScan ? "ACTIVE" : "PASSIVE");
 #endif
   drawFooter("Fn=back");
 }
@@ -438,9 +437,8 @@ static void viewScanBle() {
   drawHeader("BLE Scan (LYWSD03MMC)");
   M5Cardputer.Display.setCursor(0, 14);
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
-  M5Cardputer.Display.printf("Mode: %s  Enter=toggle\n", g_activeScan ? "ACTIVE" : "PASSIVE");
   M5Cardputer.Display.printf("BtnA=next  Space=select  Fn=back\n");
-  M5Cardputer.Display.drawFastHLine(0, 40, M5Cardputer.Display.width(), COLOR_MUTED);
+  M5Cardputer.Display.drawFastHLine(0, 28, M5Cardputer.Display.width(), COLOR_MUTED);
 
   const auto idx = buildBleSortedIndex();
   if (!idx.empty()) {
@@ -450,7 +448,7 @@ static void viewScanBle() {
     g_bleCursor = 0;
   }
 
-  const int startY = 44;
+  const int startY = 32;
   const int lineH = 14;
   const int maxLines = (M5Cardputer.Display.height() - startY - 12) / lineH;
 
@@ -494,7 +492,7 @@ static void viewScanI2c() {
   return;
 #else
   M5Cardputer.Display.fillScreen(COLOR_BG);
-  drawHeader("I2C Sensors (BMP280/TMP102/SHT3x)");
+  drawHeader("I2C Sensors (BMP/TMP/SHT/AHT)");
   M5Cardputer.Display.setCursor(0, 14);
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
   M5Cardputer.Display.print("BtnA=next  Space=select  Enter=rescan  Fn=back\n");
@@ -504,7 +502,7 @@ static void viewScanI2c() {
     M5Cardputer.Display.setCursor(0, 34);
     M5Cardputer.Display.print("(no known I2C sensors found)");
     M5Cardputer.Display.setCursor(0, 48);
-    M5Cardputer.Display.print("Try: BMP280 0x76/0x77, TMP102 0x48..0x4B, SHT3x 0x44/0x45");
+    M5Cardputer.Display.print("Try: BMP280 0x76/0x77, AHTxx 0x38, SHT3x 0x44/0x45");
     drawFooter("Fn=back");
     return;
   }
@@ -563,7 +561,6 @@ static void viewAbout() {
   M5Cardputer.Display.setTextColor(COLOR_MUTED, COLOR_BG);
   M5Cardputer.Display.print("BLE (ATC/PVVX) -> Screen/MQTT/Cloud\n\n");
   M5Cardputer.Display.printf("WiFi: %s\n", wifiConnected() ? WiFi.localIP().toString().c_str() : "(not connected)");
-  M5Cardputer.Display.printf("BLE scan: %s\n", g_activeScan ? "ACTIVE" : "PASSIVE");
   drawFooter("Fn=back");
 }
 
@@ -599,12 +596,6 @@ static void handleKeys() {
   if (g_view == View::ScanBle) {
     const int count = (int)buildBleSortedIndex().size();
     if (M5Cardputer.BtnA.wasPressed() && count > 0) g_bleCursor = (g_bleCursor + 1) % count;
-    if (keyboardPressedEnter()) {
-      g_activeScan = !g_activeScan;
-      prefsSave();
-      bleConfigureScan();
-      return;
-    }
     if (keyboardPressedSpace()) {
       const auto idx = buildBleSortedIndex();
       if (!idx.empty()) {

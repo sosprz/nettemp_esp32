@@ -18,6 +18,7 @@ enum class I2cSensorType {
   TMP102,
   SHT3X,
   SHT2X,
+  AHTxx,  // AHT10/20/21/30
 };
 
 struct I2cSensorReading {
@@ -41,6 +42,7 @@ struct I2cSensorInfo {
 // - TMP102 at 0x48-0x4B
 // - SHT3x at 0x44/0x45 (no chip-id; detected by successful measurement + CRC)
 // - HTU21D/SHT21/SI7021 at 0x40 (detected by successful measurement + CRC)
+// - AHT10/20/21/30 at 0x38 (detected by successful measurement)
 std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire);
 std::vector<uint8_t> i2cScanAllAddresses(TwoWire& wire);
 

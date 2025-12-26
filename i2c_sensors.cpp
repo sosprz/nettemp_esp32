@@ -115,6 +115,49 @@ bool sht2xReadTempHum(TwoWire& wire, uint8_t addr, float& outC, float& outH) {
   return true;
 }
 
+// -------------------- AHT10/20/21/30 --------------------
+bool ahtxxInit(TwoWire& wire, uint8_t addr) {
+  // Initialize AHTxx: send 0xE1 calibration command with parameters 0x08 0x00
+  // AHT10 requires this before each measurement; AHT20/21/30 only need it once at startup
+  // but it's safe to send before each measurement for compatibility with all models
+  const uint8_t cmd[3] = {0xE1, 0x08, 0x00};
+  return i2cWriteBytes(wire, addr, cmd, 3);
+}
+
+bool ahtxxReadTempHum(TwoWire& wire, uint8_t addr, float& outC, float& outH) {
+  // Initialize sensor (required for AHT10, safe for AHT20/21/30)
+  if (!ahtxxInit(wire, addr)) return false;
+  delay(10);
+
+  // Trigger measurement: 0xAC 0x33 0x00 (same for all AHTxx models)
+  const uint8_t cmd[3] = {0xAC, 0x33, 0x00};
+  if (!i2cWriteBytes(wire, addr, cmd, 3)) return false;
+  delay(80); // Measurement takes ~75ms
+
+  // Read 6 bytes: status + 5 data bytes
+  wire.requestFrom((int)addr, 6);
+  if (wire.available() != 6) return false;
+  uint8_t b[6];
+  for (int i = 0; i < 6; i++) b[i] = (uint8_t)wire.read();
+
+  // Check if sensor is busy (bit 7 of status byte should be 0 when ready)
+  if (b[0] & 0x80) return false;
+
+  // Extract 20-bit humidity and temperature values
+  uint32_t rawH = ((uint32_t)b[1] << 12) | ((uint32_t)b[2] << 4) | ((uint32_t)b[3] >> 4);
+  uint32_t rawT = (((uint32_t)b[3] & 0x0F) << 16) | ((uint32_t)b[4] << 8) | (uint32_t)b[5];
+
+  // Convert to physical values (same formula for all AHTxx models)
+  outH = ((float)rawH / 1048576.0f) * 100.0f;
+  outC = (((float)rawT / 1048576.0f) * 200.0f) - 50.0f;
+
+  // Clamp humidity to valid range
+  if (outH < 0.0f) outH = 0.0f;
+  if (outH > 100.0f) outH = 100.0f;
+
+  return true;
+}
+
 // -------------------- BMP280 --------------------
 struct Bmp280Calib {
   uint16_t dig_T1;
@@ -222,6 +265,7 @@ const char* i2cSensorTypeName(I2cSensorType t) {
     case I2cSensorType::TMP102: return "TMP102";
     case I2cSensorType::SHT3X: return "SHT3X";
     case I2cSensorType::SHT2X: return "SHT21/HTU21D";
+    case I2cSensorType::AHTxx: return "AHT10/20/21/30";
     default: return "UNKNOWN";
   }
 }
@@ -419,6 +463,19 @@ std::vector<I2cSensorInfo> i2cDetectKnownSensors(TwoWire& wire) {
       }
     }
 
+    // AHT10/20/21/30 typical address (probe by doing a measurement)
+    if (addr == 0x38) {
+      float t = NAN, h = NAN;
+      if (ahtxxReadTempHum(wire, addr, t, h)) {
+        info.type = I2cSensorType::AHTxx;
+        info.reading.ok = true;
+        info.reading.temperature_c = t;
+        info.reading.humidity_pct = h;
+        found.push_back(info);
+        continue;
+      }
+    }
+
     // Unknown device; ignore for now (we only show known drivers).
   }
 
@@ -458,6 +515,13 @@ void i2cUpdateReadings(TwoWire& wire, std::vector<I2cSensorInfo>& sensors) {
     } else if (s.type == I2cSensorType::SHT2X) {
       float t = NAN, h = NAN;
       if (sht2xReadTempHum(wire, s.address, t, h)) {
+        r.ok = true;
+        r.temperature_c = t;
+        r.humidity_pct = h;
+      }
+    } else if (s.type == I2cSensorType::AHTxx) {
+      float t = NAN, h = NAN;
+      if (ahtxxReadTempHum(wire, s.address, t, h)) {
         r.ok = true;
         r.temperature_c = t;
         r.humidity_pct = h;

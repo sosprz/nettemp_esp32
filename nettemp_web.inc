@@ -580,11 +580,56 @@ static void configHandleI2cPins() {
 static void configHandleSaveBle() {
   if (!webRequireAuth()) return;
   g_bleAutoScan = g_webServer.hasArg("bleAuto");
-  g_activeScan = g_webServer.hasArg("bleActive");
+
   prefsSave();
   if (g_bleAutoScan) {
     bleConfigureScan();
   }
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
+static void configHandleSaveBleMax() {
+  if (!webRequireAuth()) return;
+
+  const String maxStr = g_webServer.arg("max");
+  if (maxStr.length()) {
+    uint32_t maxSensors = maxStr.toInt();
+    if (maxSensors < 5) maxSensors = 5;
+    if (maxSensors > 200) maxSensors = 200;
+    g_bleMaxResults = (uint8_t)maxSensors;
+
+    // Prune if current count exceeds new limit (keeping selected sensors)
+    if (g_sensors.size() > maxSensors) {
+      std::vector<SensorRow> selected;
+      std::vector<SensorRow> unselected;
+
+      for (const auto& s : g_sensors) {
+        if (s.selected || s.selectionLocked) {
+          selected.push_back(s);
+        } else {
+          unselected.push_back(s);
+        }
+      }
+
+      std::sort(unselected.begin(), unselected.end(), [](const SensorRow& a, const SensorRow& b) {
+        return a.lastSeenMs > b.lastSeenMs;
+      });
+
+      g_sensors.clear();
+      g_sensors = selected;
+
+      const uint32_t remainingSlots = (maxSensors > selected.size()) ? (maxSensors - selected.size()) : 0;
+      for (uint32_t i = 0; i < remainingSlots && i < unselected.size(); i++) {
+        g_sensors.push_back(unselected[i]);
+      }
+
+      g_sensors.shrink_to_fit();
+    }
+
+    prefsSave();
+  }
+
   g_webServer.sendHeader("Location", "/", true);
   g_webServer.send(302, "text/plain", "");
 }
@@ -987,6 +1032,91 @@ static void configHandleWatchdog() {
   g_webServer.send(302, "text/plain", "");
 }
 
+static void configHandleCrashLog() {
+  if (!webRequireAuth()) return;
+
+  const String log = crashGetLog();
+  if (log.length() == 0) {
+    g_webServer.send(404, "text/plain", "No crash log available");
+    return;
+  }
+
+  g_webServer.sendHeader("Content-Disposition", "attachment; filename=crash.txt");
+  g_webServer.send(200, "text/plain", log);
+}
+
+static void configHandleCrashClear() {
+  if (!webRequireAuth()) return;
+
+  crashClear();
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
+static void configHandleCleanSensors() {
+  if (!webRequireAuth()) return;
+
+  // Remove ALL unselected sensors (keep only selected/manual ones)
+  std::vector<SensorRow> selected;
+  for (const auto& s : g_sensors) {
+    if (s.selected || s.selectionLocked) {
+      selected.push_back(s);
+    }
+  }
+
+  g_sensors = selected;
+  g_sensors.shrink_to_fit();
+
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
+static void configHandleFreeMemory() {
+  if (!webRequireAuth()) return;
+
+  // Prune BLE sensors to free memory (but NEVER prune selected sensors!)
+  const uint32_t oldSize = g_sensors.size();
+  if (g_sensors.size() > 10) {
+    // Separate selected (important) sensors from unselected ones
+    std::vector<SensorRow> selected;
+    std::vector<SensorRow> unselected;
+
+    for (const auto& s : g_sensors) {
+      if (s.selected || s.selectionLocked) {
+        selected.push_back(s);
+      } else {
+        unselected.push_back(s);
+      }
+    }
+
+    // Sort unselected by most recently seen
+    std::sort(unselected.begin(), unselected.end(), [](const SensorRow& a, const SensorRow& b) {
+      return a.lastSeenMs > b.lastSeenMs;
+    });
+
+    // Rebuild: keep ALL selected + up to 10 recent unselected
+    g_sensors.clear();
+    g_sensors = selected;  // Keep all selected sensors
+
+    const uint32_t remainingSlots = (10 > selected.size()) ? (10 - selected.size()) : 0;
+    for (uint32_t i = 0; i < remainingSlots && i < unselected.size(); i++) {
+      g_sensors.push_back(unselected[i]);
+    }
+
+    g_sensors.shrink_to_fit();
+  }
+
+  // Clear lastAdvHex strings to free memory
+  for (auto& s : g_sensors) {
+    s.lastAdvHex = "";
+    s.lastAdvSrc = "";
+    s.lastAdvUuid = "";
+  }
+
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
 static void configHandleSavePower() {
   if (!webRequireAuth()) return;
 
@@ -1089,6 +1219,7 @@ static void configServerStart() {
   g_webServer.on("/", HTTP_GET, configHandleRoot);
   g_webServer.on("/save_config", HTTP_POST, configHandleSave);
   g_webServer.on("/save_ble", HTTP_POST, configHandleSaveBle);
+  g_webServer.on("/save_ble_max", HTTP_POST, configHandleSaveBleMax);
   g_webServer.on("/save_mqtt", HTTP_POST, configHandleSaveMqtt);
   g_webServer.on("/save_server", HTTP_POST, configHandleSaveServer);
   g_webServer.on("/save_local_server", HTTP_POST, configHandleSaveLocalServer);
@@ -1111,6 +1242,10 @@ static void configServerStart() {
   g_webServer.on("/save_gpio", HTTP_POST, configHandleSaveGpio);
   g_webServer.on("/save_power", HTTP_POST, configHandleSavePower);
   g_webServer.on("/watchdog", HTTP_POST, configHandleWatchdog);
+  g_webServer.on("/crash.txt", HTTP_GET, configHandleCrashLog);
+  g_webServer.on("/crash/clear", HTTP_POST, configHandleCrashClear);
+  g_webServer.on("/free_memory", HTTP_POST, configHandleFreeMemory);
+  g_webServer.on("/clean_sensors", HTTP_POST, configHandleCleanSensors);
   g_webServer.on("/save_admin", HTTP_POST, configHandleSaveAdmin);
   g_webServer.on("/save_sensors", HTTP_POST, configHandleSaveSensors);
 #if NETTEMP_ENABLE_I2C

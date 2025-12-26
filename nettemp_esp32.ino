@@ -840,6 +840,21 @@ static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
   const int rssi = device.getRSSI();
   const uint32_t seenMs = millis();
 
+  // STRICT MODE: Only track selected sensors (ignore all others)
+  if (g_bleStrictMode) {
+    bool isSelected = false;
+    for (const auto& s : g_sensors) {
+      if (macWithColonsUpper(s.mac) == advMacCanon) {
+        if (s.selected || s.selectionLocked) {
+          isSelected = true;
+          break;
+        }
+      }
+    }
+    // If not in selected list, skip this advertisement completely
+    if (!isSelected) return;
+  }
+
   LYWSD03Reading reading{};
   bool ok = false;
   std::string raw;
@@ -2284,6 +2299,20 @@ void setup() {
   // Load prefs first to get watchdog timeout setting
   prefsLoad();
 
+  // Check for crash info from previous boot
+  crashCheckAndLoad();
+  if (g_hasCrashInfo) {
+    LOG_PRINTLN("\n!!! CRASH INFO FOUND FROM PREVIOUS BOOT !!!");
+    LOG_PRINT("Reason: ");
+    LOG_PRINTLN(g_crashReason.c_str());
+    LOG_PRINT("Location: ");
+    LOG_PRINTLN(g_crashLocation.c_str());
+    LOG_PRINT("Uptime: ");
+    LOG_PRINT(g_crashUptime / 1000);
+    LOG_PRINTLN("s");
+    LOG_PRINTLN("View crash log in System tab (or download via /crash.txt)\n");
+  }
+
   // Deinit first to avoid "already initialized" error, then reinit with our settings
   esp_task_wdt_deinit();
   esp_task_wdt_config_t wdt_config = {
@@ -2346,11 +2375,16 @@ void setup() {
   esp_task_wdt_reset();  // Feed watchdog after sensor init
   yield();
 
+  crashSaveBreadcrumb("INIT_BLE", "setup:NimBLEDevice_init");
   NimBLEDevice::init("nettemp-esp32");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   g_scan = NimBLEDevice::getScan();
   if (g_bleAutoScan) bleConfigureScan();
   esp_task_wdt_reset();  // Feed watchdog after BLE init
+
+  // Clear crash breadcrumb after successful initialization
+  crashClear();
+  LOG_PRINTLN("Setup complete, crash tracking active");
 
   // Duty-cycle runs in loop() so portal/webserver can run too (useful for debugging / short wake windows).
 }

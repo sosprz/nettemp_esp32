@@ -6,7 +6,7 @@ More info: https://nettemp.pl
 
 Arduino sketch for **any ESP32** as a Nettemp client (also works great with **M5Stack Cardputer / ESP32-S3**) that:
 - scans BLE in passive/active mode and decodes **LYWSD03MMC** (ATC/PVVX advertising),
-- reads I2C sensors (**BMP280**, **BME280**, **TMP102**, **SHT3x**, **SHT21/HTU21D/SI7021**),
+- reads I2C sensors (**BMP280**, **BME280**, **TMP102**, **SHT3x**, **SHT21/HTU21D/SI7021**, **AHT10/20/21/30**),
 - reads GPIO sensors like **DHT11/DHT22**, **DS18B20**, **HC-SR04** (ultrasonic), and **capacitive soil (ADC)**,
 - supports **VBAT** reading and **deep sleep** (duty-cycle),
 - shows readings on **Cardputer display** or **SSD1306 OLED**,
