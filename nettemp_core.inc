@@ -123,6 +123,9 @@ struct AppSettings {
   uint32_t powerAwakeHoldSeconds = 5;  // keep device awake this long after a cycle (for web access)
   // Serial-based sleep blocking removed (use reset to enter portal/config).
 
+  // Watchdog timer
+  uint32_t wdtTimeoutSeconds = 30;     // task watchdog timeout (10-300s)
+
   // Battery (VBAT)
   // mode: 0=off, 1=adc, 2=pmic (Cardputer)
   uint8_t vbatMode =
@@ -591,6 +594,10 @@ static void prefsLoad() {
   if (g_cfg.powerBootGraceSeconds > 600) g_cfg.powerBootGraceSeconds = 600;
   if (g_cfg.powerAwakeHoldSeconds > 120) g_cfg.powerAwakeHoldSeconds = 120;
 
+  g_cfg.wdtTimeoutSeconds = g_prefs.getUInt("wdtTO", g_cfg.wdtTimeoutSeconds);
+  if (g_cfg.wdtTimeoutSeconds < 10) g_cfg.wdtTimeoutSeconds = 10;
+  if (g_cfg.wdtTimeoutSeconds > 300) g_cfg.wdtTimeoutSeconds = 300;
+
   g_cfg.vbatMode = (uint8_t)g_prefs.getUChar("vbMode", g_cfg.vbatMode);
   g_cfg.vbatAdcPin = (int)g_prefs.getInt("vbPin", g_cfg.vbatAdcPin);
   g_cfg.vbatDividerX1000 = (uint16_t)g_prefs.getUShort("vbDiv", g_cfg.vbatDividerX1000);
@@ -769,6 +776,8 @@ static void prefsSave() {
   g_prefs.putUInt("pwrWiS", g_cfg.powerWifiWaitSeconds);
   g_prefs.putUInt("pwrBootS", g_cfg.powerBootGraceSeconds);
   g_prefs.putUInt("pwrHoldS", g_cfg.powerAwakeHoldSeconds);
+
+  g_prefs.putUInt("wdtTO", g_cfg.wdtTimeoutSeconds);
 
   g_prefs.putUChar("vbMode", g_cfg.vbatMode);
   g_prefs.putInt("vbPin", g_cfg.vbatAdcPin);

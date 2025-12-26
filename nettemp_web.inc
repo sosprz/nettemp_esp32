@@ -975,6 +975,18 @@ static void configHandleSaveOled() {
   g_webServer.send(302, "text/plain", "");
 }
 
+static void configHandleWatchdog() {
+  if (!webRequireAuth()) return;
+
+  g_cfg.wdtTimeoutSeconds = parseU32Or(g_webServer.arg("wdtTO"), g_cfg.wdtTimeoutSeconds);
+  if (g_cfg.wdtTimeoutSeconds < 10) g_cfg.wdtTimeoutSeconds = 10;
+  if (g_cfg.wdtTimeoutSeconds > 300) g_cfg.wdtTimeoutSeconds = 300;
+
+  prefsSave();
+  g_webServer.sendHeader("Location", "/", true);
+  g_webServer.send(302, "text/plain", "");
+}
+
 static void configHandleSavePower() {
   if (!webRequireAuth()) return;
 
@@ -1098,6 +1110,7 @@ static void configServerStart() {
   g_webServer.on("/save_oled", HTTP_POST, configHandleSaveOled);
   g_webServer.on("/save_gpio", HTTP_POST, configHandleSaveGpio);
   g_webServer.on("/save_power", HTTP_POST, configHandleSavePower);
+  g_webServer.on("/watchdog", HTTP_POST, configHandleWatchdog);
   g_webServer.on("/save_admin", HTTP_POST, configHandleSaveAdmin);
   g_webServer.on("/save_sensors", HTTP_POST, configHandleSaveSensors);
 #if NETTEMP_ENABLE_I2C

@@ -2281,18 +2281,22 @@ void setup() {
   g_powerBootCycleDone = false;
 
   // Configure hardware watchdog (framework already initializes it)
+  // Load prefs first to get watchdog timeout setting
+  prefsLoad();
+
   // Deinit first to avoid "already initialized" error, then reinit with our settings
   esp_task_wdt_deinit();
   esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = 30000,       // 30 second timeout (longer for slow WiFi/BLE operations)
+    .timeout_ms = g_cfg.wdtTimeoutSeconds * 1000UL,  // user-configurable timeout
     .idle_core_mask = 0,       // Don't watch idle tasks
     .trigger_panic = true      // Panic and reboot on timeout
   };
   esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);      // Add current task to watchdog
-  LOG_PRINTLN("Watchdog enabled: 30s timeout");
+  LOG_PRINT("Watchdog enabled: ");
+  LOG_PRINT(g_cfg.wdtTimeoutSeconds);
+  LOG_PRINTLN("s timeout");
 
-  prefsLoad();
   esp_task_wdt_reset();  // Feed watchdog after prefs load
 
 #if NETTEMP_CARDPUTER_UI

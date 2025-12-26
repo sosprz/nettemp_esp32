@@ -153,6 +153,25 @@ static String buildConfigPage(WebPrefsView& prefs) {
   auto renderTabStatus = [&]() {
   body += "<div class='card tab' id='tab-status'>";
   body += "<h3>Status</h3>";
+
+  // System time and uptime
+  {
+    const uint32_t uptimeS = millis() / 1000UL;
+    const uint32_t uptimeD = uptimeS / 86400UL;
+    const uint32_t uptimeH = (uptimeS % 86400UL) / 3600UL;
+    const uint32_t uptimeM = (uptimeS % 3600UL) / 60UL;
+    const uint32_t uptimeSec = uptimeS % 60UL;
+    body += "<div class='tile-grid' style='margin:8px 0'>";
+    body += "<div class='tile'><p style='margin:0;color:var(--muted);font-size:12px'>System Uptime</p>";
+    body += "<p style='margin:4px 0 0;font-size:16px;font-weight:600'>";
+    if (uptimeD > 0) body += String((unsigned long)uptimeD) + "d ";
+    body += String((unsigned long)uptimeH) + "h " + String((unsigned long)uptimeM) + "m " + String((unsigned long)uptimeSec) + "s</p></div>";
+
+    body += "<div class='tile'><p style='margin:0;color:var(--muted);font-size:12px'>Device ID</p>";
+    body += "<p style='margin:4px 0 0;font-size:14px;font-weight:600'>" + htmlEscape(g_cfg.deviceId) + "</p></div>";
+    body += "</div>";
+  }
+
   {
     const bool showTempc = (g_srvBleFields & SRV_BLE_TEMPC)
 #if NETTEMP_ENABLE_I2C
@@ -221,6 +240,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
       }
 
       if (!bleIdx.empty()) {
+        const uint32_t nowMs = millis();
         body += "<div class='tablewrap'><table><tr><th>Name</th><th>BLE</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
@@ -228,6 +248,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
         if (showVolt) body += "<th>volt</th>";
         if (showBatt) body += "<th>batt</th>";
         if (showRssi) body += "<th>rssi</th>";
+        body += "<th>Age(s)</th>";
         body += "</tr>";
 
         std::sort(bleIdx.begin(), bleIdx.end(), [&](size_t a, size_t b) {
@@ -253,6 +274,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showVolt) body += "<td>" + (s.voltageMv < 0 ? String("-") : String((float)s.voltageMv / 1000.0f, 3)) + "</td>";
           if (showBatt) body += "<td>" + (s.batteryPct < 0 ? String("-") : String(s.batteryPct)) + "</td>";
           if (showRssi) body += "<td>" + (s.rssi == 0 ? String("-") : String(s.rssi)) + "</td>";
+          const uint32_t ageS = (s.lastSeenMs > 0 && nowMs >= s.lastSeenMs) ? ((nowMs - s.lastSeenMs) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
         body += "</table></div>";
@@ -273,11 +296,13 @@ static String buildConfigPage(WebPrefsView& prefs) {
       }
 
       if (anyI2c) {
+        const uint32_t nowMs = millis();
         body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>Name</th><th>I2C</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
         if (showHum) body += "<th>hum</th>";
         if (showPress) body += "<th>press_hpa</th>";
+        body += "<th>Age(s)</th>";
         body += "</tr>";
 
         std::vector<size_t> i2cIdx;
@@ -328,6 +353,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showTempf) body += "<td>" + (isnan(s.reading.temperature_c) ? String("-") : String((s.reading.temperature_c * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
           if (showHum) body += "<td>" + (isnan(s.reading.humidity_pct) ? String("-") : String(s.reading.humidity_pct, 1)) + "</td>";
           if (showPress) body += "<td>" + (isnan(s.reading.pressure_hpa) ? String("-") : String(s.reading.pressure_hpa, 1)) + "</td>";
+          const uint32_t ageS = (s.last_seen_ms > 0 && nowMs >= s.last_seen_ms) ? ((nowMs - s.last_seen_ms) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
         body += "</table></div>";
@@ -342,6 +369,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
       const bool anyGpio = g_cfg.dsEnabled || g_cfg.dhtEnabled || g_cfg.vbatMode != 0 || g_cfg.soilEnabled || g_cfg.hcsr04Enabled;
 
       if (anyGpio) {
+        const uint32_t nowMs = millis();
         body += "<div class='tablewrap' style='margin-top:8px'><table><tr><th>Name</th><th>GPIO</th>";
         if (showTempc) body += "<th>tempc</th>";
         if (showTempf) body += "<th>tempf</th>";
@@ -351,6 +379,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
         if (showSoilRaw) body += "<th>soil_raw</th>";
         if (showSoilPct) body += "<th>soil_pct</th>";
         if (showHcDist) body += "<th>dist</th>";
+        body += "<th>Age(s)</th>";
         body += "</tr>";
 
         if (g_cfg.dsEnabled) {
@@ -366,6 +395,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
             if (showSoilRaw) body += "<td>-</td>";
             if (showSoilPct) body += "<td>-</td>";
             if (showHcDist) body += "<td>-</td>";
+            body += "<td>-</td>";
             body += "</tr>";
           } else {
             std::vector<size_t> dsIdx;
@@ -400,6 +430,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
               if (showSoilRaw) body += "<td>-</td>";
               if (showSoilPct) body += "<td>-</td>";
               if (showHcDist) body += "<td>-</td>";
+              const uint32_t ageS = (g_dsLastSeenMs > 0 && nowMs >= g_dsLastSeenMs) ? ((nowMs - g_dsLastSeenMs) / 1000UL) : 0;
+              body += "<td>" + String((unsigned long)ageS) + "</td>";
               body += "</tr>";
             }
           }
@@ -417,6 +449,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showSoilRaw) body += "<td>-</td>";
           if (showSoilPct) body += "<td>-</td>";
           if (showHcDist) body += "<td>-</td>";
+          const uint32_t ageS = (g_dhtLastSeenMs > 0 && nowMs >= g_dhtLastSeenMs) ? ((nowMs - g_dhtLastSeenMs) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
 
@@ -432,6 +466,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showSoilRaw) body += "<td>-</td>";
           if (showSoilPct) body += "<td>-</td>";
           if (showHcDist) body += "<td>-</td>";
+          const uint32_t ageS = (g_vbatLastSeenMs > 0 && nowMs >= g_vbatLastSeenMs) ? ((nowMs - g_vbatLastSeenMs) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
 
@@ -447,6 +483,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showSoilRaw) body += "<td>" + (g_soilRaw < 0 ? String("-") : String(g_soilRaw)) + "</td>";
           if (showSoilPct) body += "<td>" + (isnan(g_soilPct) ? String("-") : String(g_soilPct, 1)) + "</td>";
           if (showHcDist) body += "<td>-</td>";
+          const uint32_t ageS = (g_soilLastSeenMs > 0 && nowMs >= g_soilLastSeenMs) ? ((nowMs - g_soilLastSeenMs) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
 
@@ -462,6 +500,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showSoilRaw) body += "<td>-</td>";
           if (showSoilPct) body += "<td>-</td>";
           if (showHcDist) body += "<td>" + (isnan(g_hcsr04Cm) ? String("-") : String(g_hcsr04Cm, 1)) + "</td>";
+          const uint32_t ageS = (g_hcsr04LastSeenMs > 0 && nowMs >= g_hcsr04LastSeenMs) ? ((nowMs - g_hcsr04LastSeenMs) / 1000UL) : 0;
+          body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
         }
 
@@ -1205,17 +1245,28 @@ static String buildConfigPage(WebPrefsView& prefs) {
     else if (cause == ESP_SLEEP_WAKEUP_TOUCHPAD) causeStr = "touch";
     else if (cause == ESP_SLEEP_WAKEUP_ULP) causeStr = "ulp";
     String rrStr = String((int)rr);
-    if (rr == ESP_RST_DEEPSLEEP) rrStr = "deepsleep";
+    if (rr == ESP_RST_UNKNOWN) rrStr = "unknown";
     else if (rr == ESP_RST_POWERON) rrStr = "poweron";
-    else if (rr == ESP_RST_SW) rrStr = "software";
     else if (rr == ESP_RST_EXT) rrStr = "external";
+    else if (rr == ESP_RST_SW) rrStr = "software";
     else if (rr == ESP_RST_PANIC) rrStr = "panic";
+    else if (rr == ESP_RST_INT_WDT) rrStr = "int_wdt";
+    else if (rr == ESP_RST_TASK_WDT) rrStr = "task_wdt";
+    else if (rr == ESP_RST_WDT) rrStr = "wdt";
+    else if (rr == ESP_RST_DEEPSLEEP) rrStr = "deepsleep";
+    else if (rr == ESP_RST_BROWNOUT) rrStr = "brownout";
+    else if (rr == ESP_RST_SDIO) rrStr = "sdio";
     const uint32_t bootAgeS = (g_powerBootMs == 0 || millis() < g_powerBootMs) ? 0 : ((millis() - g_powerBootMs) / 1000UL);
     body += "<p class='muted'>Wakeup: <code>" + causeStr + "</code> | boot_age_s <code>" + String((unsigned long)bootAgeS) +
             "</code> | boot_grace_s <code>" + String((unsigned long)g_cfg.powerBootGraceSeconds) +
             "</code> | boot_cycle_done <code>" + String(g_powerBootCycleDone ? "yes" : "no") +
             "</code> | cycle_done_this_boot <code>" + String(g_powerCycleDoneThisBoot ? "yes" : "no") + "</code></p>";
-    body += "<p class='muted'>Reset reason: <code>" + rrStr + "</code></p>";
+    body += "<p class='muted'>Reset reason: <code>" + rrStr + "</code>";
+    if (rr == ESP_RST_TASK_WDT) {
+      body += " (task watchdog - a task blocked for >" + String((unsigned long)g_cfg.wdtTimeoutSeconds) + "s)";
+    }
+    body += "</p>";
+    body += "<p class='muted'>Task watchdog: <code>" + String((unsigned long)g_cfg.wdtTimeoutSeconds) + "s</code> timeout | watching <code>loop task</code></p>";
 #if NETTEMP_ENABLE_PORTAL
     String webModeStr = "none";
     if (g_webMode == WebMode::ApSetup) webModeStr = "ap_setup";
@@ -1223,7 +1274,16 @@ static String buildConfigPage(WebPrefsView& prefs) {
     body += "<p class='muted'>Web: <code>" + (g_portalRunning ? String("running") : String("stopped")) + "</code> | mode <code>" + webModeStr + "</code></p>";
 #endif
   }
-  body += "<div class='row' style='align-items:center;gap:10px'>"
+
+  body += "<h3 style='margin-top:20px'>Watchdog Configuration</h3>";
+  body += "<form method='POST' action='/watchdog'>";
+  body += "<label>Task watchdog timeout (10-300 seconds)</label>";
+  body += "<input name='wdtTO' type='number' min='10' max='300' value='" + String((unsigned long)g_cfg.wdtTimeoutSeconds) + "'/>";
+  body += "<p style='margin:8px 0 12px;color:var(--muted);font-size:13px'>Timeout before watchdog resets ESP32 if loop task blocks (requires reboot to apply)</p>";
+  body += "<button type='submit'>Save Watchdog Config</button>";
+  body += "</form>";
+
+  body += "<div class='row' style='align-items:center;gap:10px;margin-top:16px'>"
           "<form method='POST' action='/reboot'><button type='submit'>Reboot</button></form>"
           "<form method='POST' action='/reset' onsubmit=\"return confirm('Reset all settings?');\"><button type='submit'>Factory Reset</button></form>"
           "</div>";
