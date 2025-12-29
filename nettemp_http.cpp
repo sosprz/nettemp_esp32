@@ -68,26 +68,20 @@ static String buildPayload(const NettempBatch& batch) {
 
 bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
   if (!batch.endpoint.length() && !batch.baseUrl.length()) {
-    Serial.println("Server send failed: baseUrl not configured");
     return false;
   }
   if (batch.requireApiKey && !batch.apiKey.length()) {
-    Serial.println("Server send failed: apiKey not configured");
     return false;
   }
   if (!batch.deviceId.length()) {
-    Serial.println("Server send failed: deviceId not configured");
     return false;
   }
   if (batch.readings.empty()) {
-    Serial.println("Server send skipped: no readings to send");
     return true;
   }
 
   const String endpoint = batch.endpoint.length() ? batch.endpoint : joinUrl(batch.baseUrl, "/api/v1/data");
   const String body = buildPayload(batch);
-
-  Serial.printf("Sending %u reading(s) to server: %s\n", (unsigned)batch.readings.size(), endpoint.c_str());
 
   // Auto-detect HTTP vs HTTPS
   const bool isHttps = endpoint.startsWith("https://");
@@ -98,13 +92,11 @@ bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
     // HTTPS - use secure client
     beginOk = http.begin(client, endpoint);
     if (!beginOk) {
-      Serial.println("Server send failed: HTTPS begin failed");
     }
   } else {
     // HTTP - don't use secure client
     beginOk = http.begin(endpoint);
     if (!beginOk) {
-      Serial.println("Server send failed: HTTP begin failed");
     }
   }
 
@@ -124,12 +116,6 @@ bool nettempPostBatch(WiFiClientSecure& client, const NettempBatch& batch) {
 
   const int code = http.POST((uint8_t*)body.c_str(), body.length());
   http.end();
-
-  if (code >= 200 && code < 300) {
-    Serial.printf("Server send OK: HTTP %d\n", code);
-  } else {
-    Serial.printf("Server send failed: HTTP %d\n", code);
-  }
 
   return code >= 200 && code < 300;
 }

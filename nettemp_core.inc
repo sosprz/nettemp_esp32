@@ -11,7 +11,9 @@
 #include <PubSubClient.h>
 #endif
 #include <OneWire.h>
+#if NETTEMP_ENABLE_BLE
 #include <NimBLEDevice.h>
+#endif
 #include <Wire.h>
 
 #include "lywsd03mmc_atc_pvvx.h"
@@ -25,7 +27,7 @@
 
 namespace {
 
-constexpr uint32_t UI_REFRESH_MS = 120;
+constexpr uint32_t UI_REFRESH_MS = 1000;  // 1 second refresh to reduce blinking
 constexpr uint32_t STALE_AFTER_MS = 20UL * 60UL * 1000UL;
 constexpr uint32_t SPLASH_MS = 1100;
 constexpr uint32_t QR_ROTATE_MS = 2000;
@@ -82,13 +84,16 @@ struct AppSettings {
   bool dsEnabled = false;
   int dsPin = 4;   // GPIO for DS18B20 (1-Wire)
   bool dhtEnabled = false;
+  bool dhtSelected = true;
   int dhtPin = 16; // GPIO for DHT11/DHT22
   int dhtType = 22; // 11 or 22
   bool soilEnabled = false;
+  bool soilSelected = true;
   int soilAdcPin = 34; // ADC1 pin for capacitive soil sensor
   int soilDryRaw = 3000;
   int soilWetRaw = 1400;
   bool hcsr04Enabled = false;
+  bool hcsr04Selected = true;
   int hcsr04TrigPin = 4;
   int hcsr04EchoPin = 16;
   bool oledEnabled = true;
@@ -135,6 +140,7 @@ struct AppSettings {
     1
 #endif
     ;
+  bool vbatSelected = true;
   int vbatAdcPin = 36;             // ESP32 classic: GPIO36 (ADC1); on ESP32-S3 this pin doesn't exist
   uint16_t vbatDividerX1000 = 2000; // divider ratio (VBAT = ADC * ratio). 2000 => 2.0 (e.g. 100k/100k)
   uint16_t vbatFullMv = 4200;      // 4.2V full (18650)
@@ -181,10 +187,12 @@ uint32_t g_localBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
 constexpr uint32_t SRV_I2C_TEMPC = 1u << 0;
 constexpr uint32_t SRV_I2C_HUM = 1u << 1;
 constexpr uint32_t SRV_I2C_PRESS = 1u << 2;
-uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
-uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
-uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
-uint32_t g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+constexpr uint32_t SRV_I2C_LUX = 1u << 3;
+constexpr uint32_t SRV_I2C_DIST = 1u << 4;
+uint32_t g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
+uint32_t g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
+uint32_t g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
+uint32_t g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
 
 // GPIO → Server/Local/MQTT/Webhook field selection.
 // Defaults: all GPIO fields enabled.
@@ -205,6 +213,7 @@ uint32_t g_mqttGpioFields = SRV_GPIO_DEFAULT;
 uint32_t g_webhookGpioFields = SRV_GPIO_DEFAULT;
 uint32_t g_localGpioFields = SRV_GPIO_DEFAULT_LOCAL;
 
+#if NETTEMP_ENABLE_BLE
 std::vector<SensorRow> g_sensors;
 bool g_bleAutoScan = true;
 bool g_activeScan = false;
@@ -212,6 +221,18 @@ bool g_bleStrictMode = false;  // If true, only track selected sensors (ignore a
 int g_bleCursor = 0;
 uint8_t g_bleMaxResults = 50;
 bool g_bleParseMfg = NETTEMP_BLE_PARSE_MFG;
+
+// Periodic BLE scan timing (5s scan / 55s pause = 60s total cycle)
+constexpr uint32_t BLE_PERIODIC_SCAN_MS = 15000;     // Scan for 15 seconds
+constexpr uint32_t BLE_PERIODIC_PAUSE_MS = 55000;   // Pause for 55 seconds
+uint32_t g_bleLastScanStartMs = 0;
+bool g_bleScanPhaseActive = false;  // true=scanning, false=paused
+#else
+// BLE disabled - provide minimal stubs
+std::vector<SensorRow> g_sensors;  // Keep empty vector for compatibility
+bool g_bleAutoScan = false;
+int g_bleCursor = 0;
+#endif
 
 #if NETTEMP_ENABLE_I2C
 std::vector<I2cSensorInfo> g_i2cSensors;
@@ -282,6 +303,14 @@ uint32_t g_lastWebhookSendMs = 0;
 uint32_t g_lastSerialRxMs = 0;
 bool g_i2cBegun = false;
 
+#if NETTEMP_CARDPUTER_UI
+// M5Cardputer: Use Wire1 for external sensors to avoid keyboard conflict (Wire = keyboard on GPIO1/2)
+TwoWire* g_i2cBus = &Wire1;
+#else
+// Standard ESP32: Use Wire for sensors
+TwoWire* g_i2cBus = &Wire;
+#endif
+
 // Async flags for web-triggered channel sends (prevents blocking web server)
 volatile bool g_pendingSendMqtt = false;
 volatile bool g_pendingSendServer = false;
@@ -303,6 +332,7 @@ bool g_hasCrashInfo = false;
 
 enum class View {
   MainMenu,
+  ShowSensors,
   ScanBle,
   ScanI2c,
   WifiSetup,
@@ -310,9 +340,18 @@ enum class View {
   ServerSetup,
   PairQr,
   About,
+  Channels,
+  ResetConfirm,
+  GpioDevices,
+  GpioDs18b20,
+  GpioHcsr04,
+  GpioDht,
 };
 
 View g_view = View::MainMenu;
+View g_prevView = View::MainMenu;
+bool g_viewNeedsRedraw = true;
+bool g_viewNeedsClear = true;
 int g_menuIndex = 0;
 uint32_t g_lastQrTickMs = 0;
 
@@ -320,6 +359,7 @@ uint32_t g_lastQrTickMs = 0;
 static void prefsSave();
 static String macNoColonsUpper(const String& mac);
 static String macWithColonsUpper(const String& mac);
+static String normalizeMacToColonsUpper(String mac);
 static std::vector<size_t> buildBleSortedIndex();
 static String serverBleFieldsEnabledString();
 static String serverBleFieldsAvailableString();
@@ -342,6 +382,9 @@ static bool dhtReadOnce(int gpio, int type, float& outTempC, float& outHumPct);
 static void dhtTick();
 static void wifiConnectIfConfigured();
 static void wifiWaitConnected(uint32_t timeoutMs);
+#if NETTEMP_ENABLE_PORTAL
+static String portalSsid();
+#endif
 static void powerSleepCycleMaybe();
 static void powerEnterDeepSleep(uint32_t sleepSeconds);
 static void vbatTick();
@@ -353,13 +396,18 @@ static bool vbatReadVolts(float& outV);
 static int vbatToPercent(float vbatV);
 
 uint32_t g_lastWifiBeginMs = 0;
+#if NETTEMP_ENABLE_BLE
 uint32_t g_lastBleEnsureMs = 0;
+#endif
 
+#if NETTEMP_ENABLE_BLE
 struct BleManualSel {
   String macNo;   // A4C138DE459E
   bool selected;  // true=send, false=disabled
 };
 std::vector<BleManualSel> g_bleManualSel;
+String g_bleCacheLast;
+uint32_t g_bleCacheLastSaveMs = 0;
 
 static BleManualSel* bleManualFind(const String& macNo) {
   for (auto& e : g_bleManualSel) {
@@ -402,6 +450,13 @@ static void bleManualClear(const String& macNo) {
   }
 }
 
+static bool bleManualHasAnySelected() {
+  for (const auto& e : g_bleManualSel) {
+    if (e.selected) return true;
+  }
+  return false;
+}
+
 static String bleManualEncode() {
   String out;
   for (size_t i = 0; i < g_bleManualSel.size(); i++) {
@@ -432,6 +487,111 @@ static void bleManualDecode(const String& s) {
     g_bleManualSel.push_back(BleManualSel{.macNo = macNo, .selected = selected});
   }
 }
+
+static String bleCacheEncode(size_t maxEntries) {
+  String out;
+  size_t added = 0;
+  for (const auto& s : g_sensors) {
+    if (!bleIsSelected(s)) continue;
+    if (added >= maxEntries) break;
+    if (out.length()) out += ";";
+    out += macNoColonsUpper(s.mac);
+    out += ",";
+    if (!isnan(s.temperatureC)) out += String(s.temperatureC, 2);
+    out += ",";
+    if (!isnan(s.humidityPct)) out += String(s.humidityPct, 1);
+    out += ",";
+    if (s.batteryPct >= 0) out += String(s.batteryPct);
+    out += ",";
+    if (s.voltageMv >= 0) out += String(s.voltageMv);
+    added++;
+  }
+  return out;
+}
+
+static void bleCacheEnsureManualSelected() {
+  for (const auto& e : g_bleManualSel) {
+    if (!e.selected) continue;
+    const String mac = normalizeMacToColonsUpper(e.macNo);
+    bool found = false;
+    for (const auto& s : g_sensors) {
+      if (macWithColonsUpper(s.mac) == mac) {
+        found = true;
+        break;
+      }
+    }
+    if (found) continue;
+    SensorRow row;
+    row.mac = mac;
+    row.selected = true;
+    row.selectionLocked = true;
+    row.lastSeenMs = millis();
+    g_sensors.push_back(row);
+  }
+}
+
+static void bleCacheDecode(const String& s) {
+  if (!s.length()) return;
+  g_sensors.clear();
+  int pos = 0;
+  while (pos < (int)s.length()) {
+    int semi = s.indexOf(';', pos);
+    if (semi < 0) semi = (int)s.length();
+    const String part = s.substring(pos, semi);
+    pos = semi + 1;
+    if (!part.length()) continue;
+
+    String fields[5];
+    int fpos = 0;
+    int idx = 0;
+    while (idx < 5 && fpos <= (int)part.length()) {
+      int comma = part.indexOf(',', fpos);
+      if (comma < 0) comma = (int)part.length();
+      fields[idx++] = part.substring(fpos, comma);
+      fpos = comma + 1;
+    }
+    const String macNo = fields[0];
+    if (!macNo.length()) continue;
+    const String mac = normalizeMacToColonsUpper(macNo);
+    SensorRow row;
+    row.mac = mac;
+    if (fields[1].length()) row.temperatureC = fields[1].toFloat();
+    if (fields[2].length()) row.humidityPct = fields[2].toFloat();
+    if (fields[3].length()) row.batteryPct = fields[3].toInt();
+    if (fields[4].length()) row.voltageMv = fields[4].toInt();
+    row.lastSeenMs = millis();
+    bool manualSelected = false;
+    const bool manual = bleManualGetSelected(macNoColonsUpper(row.mac), manualSelected);
+    row.selected = manual ? manualSelected : false;
+    row.selectionLocked = manual;
+    g_sensors.push_back(row);
+  }
+  bleCacheEnsureManualSelected();
+}
+
+static void bleCachePersistMaybe(bool force = false) {
+  const uint32_t now = millis();
+  if (!force && (now - g_bleCacheLastSaveMs) < 30000) return;
+  const size_t maxEntries = (g_bleMaxResults > 0) ? (size_t)g_bleMaxResults : 50;
+  const String encoded = bleCacheEncode(maxEntries);
+  if (encoded != g_bleCacheLast) {
+    g_prefs.begin("nettemp", false);
+    g_prefs.putString("bleCache", encoded);
+    g_prefs.end();
+    g_bleCacheLast = encoded;
+  }
+  g_bleCacheLastSaveMs = now;
+}
+#else
+// BLE disabled - provide stub functions
+static void bleManualSet(const String&, bool) {}
+static void bleManualClear(const String&) {}
+static String bleManualEncode() { return ""; }
+static void bleManualDecode(const String&) {}
+static bool bleManualGetSelected(const String&, bool&) { return false; }
+static bool bleIsSelected(const SensorRow&) { return false; }
+static bool bleManualHasAnySelected() { return false; }
+#endif  // NETTEMP_ENABLE_BLE
 
 #if NETTEMP_ENABLE_I2C
 static String i2cSerializeSensors(const std::vector<I2cSensorInfo>& sensors) {
@@ -524,19 +684,19 @@ static void prefsLoad() {
   g_srvBleFields = g_prefs.getUInt("srvBleF", g_srvBleFields);
   if (g_srvBleFields == 0) g_srvBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_srvI2cFields = g_prefs.getUInt("srvI2cF", g_srvI2cFields);
-  if (g_srvI2cFields == 0) g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  if (g_srvI2cFields == 0) g_srvI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
   g_mqttBleFields = g_prefs.getUInt("mqBleF", g_mqttBleFields);
   if (g_mqttBleFields == 0) g_mqttBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_mqttI2cFields = g_prefs.getUInt("mqI2cF", g_mqttI2cFields);
-  if (g_mqttI2cFields == 0) g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  if (g_mqttI2cFields == 0) g_mqttI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
   g_webhookBleFields = g_prefs.getUInt("whBleF", g_webhookBleFields);
   if (g_webhookBleFields == 0) g_webhookBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_webhookI2cFields = g_prefs.getUInt("whI2cF", g_webhookI2cFields);
-  if (g_webhookI2cFields == 0) g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  if (g_webhookI2cFields == 0) g_webhookI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
   g_localBleFields = g_prefs.getUInt("lsBleF", g_localBleFields);
   if (g_localBleFields == 0) g_localBleFields = (SRV_BLE_TEMPC | SRV_BLE_HUM | SRV_BLE_BATT);
   g_localI2cFields = g_prefs.getUInt("lsI2cF", g_localI2cFields);
-  if (g_localI2cFields == 0) g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS);
+  if (g_localI2cFields == 0) g_localI2cFields = (SRV_I2C_TEMPC | SRV_I2C_HUM | SRV_I2C_PRESS | SRV_I2C_LUX | SRV_I2C_DIST);
   g_srvGpioFields = g_prefs.getUInt("srvGpioF", g_srvGpioFields);
   if (g_srvGpioFields == 0) g_srvGpioFields = SRV_GPIO_DEFAULT;
   g_mqttGpioFields = g_prefs.getUInt("mqGpioF", g_mqttGpioFields);
@@ -546,17 +706,31 @@ static void prefsLoad() {
   g_localGpioFields = g_prefs.getUInt("lsGpioF", g_localGpioFields);
   if (g_localGpioFields == 0) g_localGpioFields = SRV_GPIO_DEFAULT_LOCAL;
   bleManualDecode(g_prefs.getString("bleMan", ""));
+#if NETTEMP_ENABLE_BLE
+  {
+    const String cache = g_prefs.getString("bleCache", "");
+    g_bleCacheLast = cache;
+    bleCacheDecode(cache);
+  }
+  bleCacheEnsureManualSelected();
+#endif
+#if NETTEMP_ENABLE_BLE
+  if (bleManualHasAnySelected()) g_bleStrictMode = true;
+#endif
 
   g_cfg.dsEnabled = g_prefs.getBool("dsEn", g_cfg.dsEnabled);
   g_cfg.dsPin = (int)g_prefs.getInt("dsPin", g_cfg.dsPin);
   g_cfg.dhtEnabled = g_prefs.getBool("dhtEn", g_cfg.dhtEnabled);
+  g_cfg.dhtSelected = g_prefs.getBool("dhtSel", g_cfg.dhtSelected);
   g_cfg.dhtPin = (int)g_prefs.getInt("dhtPin", g_cfg.dhtPin);
   g_cfg.dhtType = (int)g_prefs.getInt("dhtType", g_cfg.dhtType);
   g_cfg.soilEnabled = g_prefs.getBool("soilEn", g_cfg.soilEnabled);
+  g_cfg.soilSelected = g_prefs.getBool("soilSel", g_cfg.soilSelected);
   g_cfg.soilAdcPin = (int)g_prefs.getInt("soilPin", g_cfg.soilAdcPin);
   g_cfg.soilDryRaw = (int)g_prefs.getInt("soilDry", g_cfg.soilDryRaw);
   g_cfg.soilWetRaw = (int)g_prefs.getInt("soilWet", g_cfg.soilWetRaw);
   g_cfg.hcsr04Enabled = g_prefs.getBool("hcEn", g_cfg.hcsr04Enabled);
+  g_cfg.hcsr04Selected = g_prefs.getBool("hcSel", g_cfg.hcsr04Selected);
   g_cfg.hcsr04TrigPin = (int)g_prefs.getInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_cfg.hcsr04EchoPin = (int)g_prefs.getInt("hcEcho", g_cfg.hcsr04EchoPin);
   g_cfg.oledEnabled = g_prefs.getBool("oledEn", g_cfg.oledEnabled);
@@ -611,12 +785,20 @@ static void prefsLoad() {
   if (g_cfg.wdtTimeoutSeconds > 300) g_cfg.wdtTimeoutSeconds = 300;
 
   g_cfg.vbatMode = (uint8_t)g_prefs.getUChar("vbMode", g_cfg.vbatMode);
+#if NETTEMP_CARDPUTER_UI
+  if (!g_prefs.isKey("vbMode")) g_cfg.vbatMode = 2;
+#endif
+  g_cfg.vbatSelected = g_prefs.getBool("vbSel", g_cfg.vbatSelected);
   g_cfg.vbatAdcPin = (int)g_prefs.getInt("vbPin", g_cfg.vbatAdcPin);
   g_cfg.vbatDividerX1000 = (uint16_t)g_prefs.getUShort("vbDiv", g_cfg.vbatDividerX1000);
   g_cfg.vbatFullMv = (uint16_t)g_prefs.getUShort("vbFull", g_cfg.vbatFullMv);
   g_cfg.vbatEmptyMv = (uint16_t)g_prefs.getUShort("vbEmp", g_cfg.vbatEmptyMv);
   g_cfg.vbatSendVolt = g_prefs.getBool("vbSV", g_cfg.vbatSendVolt);
   if (g_cfg.vbatMode > 2) g_cfg.vbatMode = 0;
+#if CONFIG_IDF_TARGET_ESP32S3
+  // ESP32-S3 ADC path is incompatible; allow PMIC mode only.
+  if (g_cfg.vbatMode == 1) g_cfg.vbatMode = 0;
+#endif
   if (g_cfg.vbatDividerX1000 < 500) g_cfg.vbatDividerX1000 = 500;
   if (g_cfg.vbatDividerX1000 > 5000) g_cfg.vbatDividerX1000 = 5000;
   if (g_cfg.vbatFullMv < 3600) g_cfg.vbatFullMv = 4200;
@@ -624,6 +806,7 @@ static void prefsLoad() {
   if (g_cfg.vbatEmptyMv < 2500) g_cfg.vbatEmptyMv = 3200;
   if (g_cfg.vbatEmptyMv > 4200) g_cfg.vbatEmptyMv = 3200;
 
+#if NETTEMP_ENABLE_BLE
   g_bleAutoScan = g_prefs.getBool("bleAuto", true);
   g_activeScan = g_prefs.getBool("bleAct", false);
   g_bleStrictMode = g_prefs.getBool("bleStrict", false);
@@ -634,6 +817,7 @@ static void prefsLoad() {
     else g_bleMaxResults = (uint8_t)v;
   }
   g_bleParseMfg = g_prefs.getBool("bleMfg", g_bleParseMfg);
+#endif
 #if NETTEMP_ENABLE_PORTAL
   g_portalAuto = g_prefs.getBool("apAuto", g_portalAuto);
 #endif
@@ -752,13 +936,16 @@ static void prefsSave() {
   g_prefs.putBool("dsEn", g_cfg.dsEnabled);
   g_prefs.putInt("dsPin", g_cfg.dsPin);
   g_prefs.putBool("dhtEn", g_cfg.dhtEnabled);
+  g_prefs.putBool("dhtSel", g_cfg.dhtSelected);
   g_prefs.putInt("dhtPin", g_cfg.dhtPin);
   g_prefs.putInt("dhtType", g_cfg.dhtType);
   g_prefs.putBool("soilEn", g_cfg.soilEnabled);
+  g_prefs.putBool("soilSel", g_cfg.soilSelected);
   g_prefs.putInt("soilPin", g_cfg.soilAdcPin);
   g_prefs.putInt("soilDry", g_cfg.soilDryRaw);
   g_prefs.putInt("soilWet", g_cfg.soilWetRaw);
   g_prefs.putBool("hcEn", g_cfg.hcsr04Enabled);
+  g_prefs.putBool("hcSel", g_cfg.hcsr04Selected);
   g_prefs.putInt("hcTrig", g_cfg.hcsr04TrigPin);
   g_prefs.putInt("hcEcho", g_cfg.hcsr04EchoPin);
   g_prefs.putBool("oledEn", g_cfg.oledEnabled);
@@ -798,12 +985,15 @@ static void prefsSave() {
   g_prefs.putUShort("vbFull", g_cfg.vbatFullMv);
   g_prefs.putUShort("vbEmp", g_cfg.vbatEmptyMv);
   g_prefs.putBool("vbSV", g_cfg.vbatSendVolt);
+  g_prefs.putBool("vbSel", g_cfg.vbatSelected);
 
+#if NETTEMP_ENABLE_BLE
   g_prefs.putBool("bleAuto", g_bleAutoScan);
   g_prefs.putBool("bleAct", g_activeScan);
   g_prefs.putBool("bleStrict", g_bleStrictMode);
   g_prefs.putUInt("bleMax", (uint32_t)g_bleMaxResults);
   g_prefs.putBool("bleMfg", g_bleParseMfg);
+#endif
 #if NETTEMP_ENABLE_PORTAL
   g_prefs.putBool("apAuto", g_portalAuto);
 #endif
@@ -908,14 +1098,21 @@ static void i2cInitBus() {
   // If pins are not configured, use the board defaults.
   if (g_i2cBegun) {
 #if defined(ARDUINO_ARCH_ESP32)
-    Wire.end();
+    g_i2cBus->end();
 #endif
     g_i2cBegun = false;
   }
   if (g_cfg.i2cSdaPin >= 0 && g_cfg.i2cSclPin >= 0) {
-    Wire.begin(g_cfg.i2cSdaPin, g_cfg.i2cSclPin);
+    g_i2cBus->begin(g_cfg.i2cSdaPin, g_cfg.i2cSclPin);
   } else {
-    Wire.begin();
+#if NETTEMP_CARDPUTER_UI
+    // M5Cardputer: Use GPIO8/GPIO9 for external sensors
+    // Wire1 is used to avoid conflict with keyboard (Wire on GPIO1/GPIO2)
+    // You can change these pins via the web interface at /i2c_pins
+    g_i2cBus->begin(8, 9);  // SDA=GPIO8, SCL=GPIO9
+#else
+    g_i2cBus->begin();
+#endif
   }
   g_i2cBegun = true;
 }
@@ -957,7 +1154,10 @@ static String dsKeySuffix(const String& romHex) {
 
 static String prefKeyDsNameLegacy(const String& romHex) { return String("dn") + keyTail10(romHex); }
 static String prefKeyDsName(const String& romHex) { return String("dn") + dsKeySuffix(romHex); }
+static String prefKeyDsSel(const String& romHex) { return String("dsS") + dsKeySuffix(romHex); }
 static String prefKeyI2cName(const String& addrHex) { return String("in") + addrHex; }
+static String prefKeyDhtName() { return String("gd"); }  // GPIO DHT name
+static String prefKeyHcsr04Name() { return String("gh"); }  // GPIO HC-SR04 name
 
 static String prefKeyBleOledSel(const String& macNo) { return String("ob") + keyTail10(macNo); }
 static String prefKeyBleOledTempc(const String& macNo) { return String("obT") + keyTail10(macNo); }

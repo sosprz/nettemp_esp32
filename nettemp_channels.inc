@@ -168,6 +168,26 @@ static void appendI2cReadingsServerLike(NettempBatch& batch, const I2cSensor& s,
       .friendlyName = nameFor("press"),
     });
   }
+  if ((mask & SRV_I2C_LUX) && !isnan(s.reading.light_lux)) {
+    batch.readings.push_back(NettempReading{
+      .sensorId = base + "_lux",
+      .value = s.reading.light_lux,
+      .sensorType = "illuminance",
+      .unit = "lx",
+      .timestamp = ts,
+      .friendlyName = nameFor("lux"),
+    });
+  }
+  if ((mask & SRV_I2C_DIST) && !isnan(s.reading.distance_mm)) {
+    batch.readings.push_back(NettempReading{
+      .sensorId = base + "_dist",
+      .value = s.reading.distance_mm / 10.0f,
+      .sensorType = "distance",
+      .unit = "cm",
+      .timestamp = ts,
+      .friendlyName = nameFor("dist"),
+    });
+  }
 }
 #endif
 #endif
@@ -210,6 +230,12 @@ static void publishI2cReadingsMqtt(const I2cSensor& s, const String& base, uint3
   }
   if ((mask & SRV_I2C_PRESS) && !isnan(s.reading.pressure_hpa)) {
     publish(base + "_press_hpa", "pressure", nameFor("press"), String(s.reading.pressure_hpa, 1));
+  }
+  if ((mask & SRV_I2C_LUX) && !isnan(s.reading.light_lux)) {
+    publish(base + "_lux", "illuminance", nameFor("lux"), String(s.reading.light_lux, 1));
+  }
+  if ((mask & SRV_I2C_DIST) && !isnan(s.reading.distance_mm)) {
+    publish(base + "_dist", "distance", nameFor("dist"), String(s.reading.distance_mm / 10.0f, 1));
   }
 }
 #endif

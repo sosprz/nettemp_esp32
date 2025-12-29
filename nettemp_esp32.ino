@@ -6,6 +6,10 @@
 #endif
 #endif
 
+#ifndef NETTEMP_ENABLE_BLE
+#define NETTEMP_ENABLE_BLE 1
+#endif
+
 #ifndef NETTEMP_SERIAL_BAUD
 #define NETTEMP_SERIAL_BAUD 115200
 #endif
@@ -70,6 +74,13 @@
 #define LOG_PRINTF(...) do {} while (0)
 #define LOG_PRINTLN(...) do {} while (0)
 #define LOG_PRINT(...) do {} while (0)
+#endif
+
+// Conditional watchdog reset (ESP32-S3 uses default watchdog, don't reset manually)
+#if CONFIG_IDF_TARGET_ESP32S3
+#define SAFE_WDT_RESET() do {} while (0)
+#else
+#define SAFE_WDT_RESET() esp_task_wdt_reset()
 #endif
 
 #if NETTEMP_ENABLE_OLED
@@ -350,7 +361,7 @@ static bool oledPickBatt(int& outPct) {
 static bool oledPickTempcFromSource(const String& src, float& outC) {
   if (src.length() == 0 || src == "auto") return oledPickTempc(outC);
   if (src == "dht") {
-    if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
+    if (g_cfg.dhtEnabled && g_cfg.dhtSelected && !isnan(g_dhtTempC)) {
       outC = g_dhtTempC;
       return true;
     }
@@ -404,7 +415,7 @@ static bool oledPickVoltFromSource(const String& src, float& outV) {
 static bool oledPickBattFromSource(const String& src, int& outPct) {
   if (src.length() == 0 || src == "auto") return oledPickBatt(outPct);
   if (src == "vbat") {
-    if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
+    if (g_cfg.vbatMode != 0 && g_cfg.vbatSelected && g_vbatPct >= 0) {
       outPct = g_vbatPct;
       return true;
     }
@@ -418,7 +429,7 @@ static bool oledPickBattFromSource(const String& src, int& outPct) {
 
 static bool oledPickSoilRawFromSource(const String& src, int& outRaw) {
   if (src.length() == 0 || src == "auto" || src == "soil") {
-    if (g_cfg.soilEnabled && g_soilRaw >= 0) {
+    if (g_cfg.soilEnabled && g_cfg.soilSelected && g_soilRaw >= 0) {
       outRaw = g_soilRaw;
       return true;
     }
@@ -438,7 +449,7 @@ static bool oledPickSoilPctFromSource(const String& src, float& outPct) {
 
 static bool oledPickDistFromSource(const String& src, float& outCm) {
   if (src.length() == 0 || src == "auto" || src == "hcsr04") {
-    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+    if (g_cfg.hcsr04Enabled && g_cfg.hcsr04Selected && !isnan(g_hcsr04Cm)) {
       outCm = g_hcsr04Cm;
       return true;
     }
@@ -832,6 +843,8 @@ static String buildBtToMqttJsonMinimal(const SensorRow& s) {
   return json;
 }
 
+#if NETTEMP_ENABLE_BLE
+
 static NimBLEScan* g_scan = nullptr;
 
 static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
@@ -841,18 +854,25 @@ static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
   const uint32_t seenMs = millis();
 
   // STRICT MODE: Only track selected sensors (ignore all others)
-  if (g_bleStrictMode) {
-    bool isSelected = false;
-    for (const auto& s : g_sensors) {
-      if (macWithColonsUpper(s.mac) == advMacCanon) {
-        if (s.selected || s.selectionLocked) {
-          isSelected = true;
-          break;
+  const bool strictActive = g_bleStrictMode || bleManualHasAnySelected();
+  if (strictActive) {
+    const String macNo = macNoColonsUpper(advMacCanon);
+    bool manualSelected = false;
+    const bool manual = bleManualGetSelected(macNo, manualSelected);
+    if (manual) {
+      if (!manualSelected) return;
+    } else {
+      bool isSelected = false;
+      for (const auto& s : g_sensors) {
+        if (macWithColonsUpper(s.mac) == advMacCanon) {
+          if (s.selected || s.selectionLocked) {
+            isSelected = true;
+            break;
+          }
         }
       }
+      if (!isSelected) return;
     }
-    // If not in selected list, skip this advertisement completely
-    if (!isSelected) return;
   }
 
   LYWSD03Reading reading{};
@@ -861,7 +881,7 @@ static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
   const char* src = "";
   String uuidStr;
   if (device.haveServiceData()) {
-    // Prefer the service-data entry whose UUID is 0x181A (ATC/PVVX).
+    // Prefer the service-data entry whose UUID is 0x181A (ATC1441).
     const uint8_t n = device.getServiceDataCount();
     uint8_t idx = 0xFF;
     for (uint8_t i = 0; i < n; i++) {
@@ -874,24 +894,9 @@ static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
     // Strict: only decode if we actually have 0x181A service data. Don't guess other UUIDs.
     if (idx != 0xFF) {
       raw = device.getServiceData(idx);
-      ok = parseLywsd03FromServiceData(raw, reading);
+      ok = parseLywsd03FromServiceDataAtc1441(raw, reading);
       if (ok) src = "service";
     }
-  }
-  if (!ok && g_bleParseMfg && device.haveManufacturerData()) {
-    raw = device.getManufacturerData();
-    ok = parseLywsd03FromManufacturerData(raw, reading);
-    if (ok) {
-      // Strict check to avoid false positives: embedded MAC (ATC/PVVX) must match advertising address.
-      if (!reading.has_mac) {
-        ok = false;
-      } else {
-        const String embeddedRev = formatMacFromBytesReversedUpper(reading.mac);
-        const String embeddedFwd = formatMacFromBytesForwardUpper(reading.mac);
-        if (embeddedRev != advMacCanon && embeddedFwd != advMacCanon) ok = false;
-      }
-    }
-    if (ok) src = "mfg";
   }
   if (ok) {
     String canonicalMac = advMac;
@@ -916,38 +921,7 @@ static void processAdvertisedDevice(const NimBLEAdvertisedDevice& device) {
     row->voltageMv = reading.voltage_mv;
     row->counter = reading.counter;
     row->flags = reading.flags;
-  } else {
-    // Track non-decoded devices so the user can see that scanning works even if decoding fails.
-    const bool collectUnknown = true;
-    if (collectUnknown) {
-      auto* row = upsertSensor(advMac);
-      row->rssi = rssi;
-      row->lastSeenMs = seenMs;
-      if (device.haveServiceData()) {
-        // Show first service-data blob (and its UUID) to aid debugging.
-        std::string s;
-        NimBLEUUID u;
-        const uint8_t n = device.getServiceDataCount();
-        if (n > 0) {
-          u = device.getServiceDataUUID(0);
-          s = device.getServiceData(0);
-        } else {
-          s = device.getServiceData();
-        }
-        row->lastAdvHex = s.empty() ? "" : bytesToHexUpper(s);
-        row->lastAdvSrc = "service";
-        row->lastAdvUuid = n > 0 ? String(u.toString().c_str()) : "";
-      } else if (device.haveManufacturerData()) {
-        const std::string m = device.getManufacturerData();
-        row->lastAdvHex = m.empty() ? "" : bytesToHexUpper(m);
-        row->lastAdvSrc = "mfg";
-        row->lastAdvUuid = "";
-      } else {
-        row->lastAdvHex = "";
-        row->lastAdvSrc = "";
-        row->lastAdvUuid = "";
-      }
-    }
+    if (bleIsSelected(*row)) bleCachePersistMaybe();
   }
 }
 
@@ -958,7 +932,7 @@ class NettempScanCallbacks : public NimBLEScanCallbacks {
   }
 };
 
-static NettempScanCallbacks g_scanCallbacks;
+static NettempScanCallbacks* g_scanCallbacks = nullptr;
 
 static void bleStartScanFor(uint32_t durationMs, bool keepExistingResults) {
   if (!g_scan) return;
@@ -970,7 +944,7 @@ static void bleStartScanFor(uint32_t durationMs, bool keepExistingResults) {
     g_sensors.clear();
   }
 
-  g_scan->setScanCallbacks(&g_scanCallbacks, /*wantDuplicates=*/true);
+  g_scan->setScanCallbacks(g_scanCallbacks, /*wantDuplicates=*/true);
   g_scan->setActiveScan(g_activeScan);
   g_scan->setInterval(90);
   g_scan->setWindow(60);
@@ -987,19 +961,103 @@ static void bleStartScanFor(uint32_t durationMs, bool keepExistingResults) {
 }
 
 static void bleConfigureScan() {
-  // duration=0 -> scan forever
-  bleStartScanFor(/*durationMs=*/0, /*keepExistingResults=*/true);
+  // Periodic scan: scan for 5 seconds (instead of forever)
+  bleStartScanFor(BLE_PERIODIC_SCAN_MS, /*keepExistingResults=*/true);
+  g_bleLastScanStartMs = millis();
+  g_bleScanPhaseActive = true;
 }
 
-static void bleEnsureAutoScan() {
-  if (!g_scan) return;
-  if (!g_bleAutoScan) {
-    if (g_scan->isScanning()) g_scan->stop();
-    return;
+static void bleTriggerManualScan() {
+  // If BLE is off (during pause), reinitialize it
+  if (!g_scan) {
+    NimBLEDevice::init("nettemp-esp32");
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+    g_scan = NimBLEDevice::getScan();
+    g_scan->setScanCallbacks(g_scanCallbacks, /*wantDuplicates=*/true);
+    g_scan->setActiveScan(g_activeScan);
+    g_scan->setInterval(90);  // 90 × 0.625ms = 56.25ms
+    g_scan->setWindow(60);    // 60 × 0.625ms = 37.5ms
   }
-  if (g_scan->isScanning()) return;
+
+  // Start 5-second scan
   bleConfigureScan();
 }
+
+static void bleTickPeriodicScan() {
+#if NETTEMP_CARDPUTER_UI
+  if (g_view != View::ScanBle) {
+    if (g_scan && g_scan->isScanning()) g_scan->stop();
+    g_bleScanPhaseActive = false;
+    return;
+  }
+  g_bleAutoScan = true;
+  g_bleMaxResults = 50;
+#endif
+  // If auto-scan is disabled, shut down BLE completely
+  if (!g_bleAutoScan) {
+    if (g_scan && g_scan->isScanning()) g_scan->stop();
+    if (g_scan) {
+      NimBLEDevice::deinit(true);  // true = release memory
+      g_scan = nullptr;
+    }
+    g_bleScanPhaseActive = false;
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+
+  // Handle scan phase (5 seconds active scanning)
+  if (g_bleScanPhaseActive) {
+    // Check if scan completed (either by timeout or manually stopped)
+    if (g_scan && !g_scan->isScanning() && (nowMs - g_bleLastScanStartMs >= BLE_PERIODIC_SCAN_MS)) {
+      // Scan phase complete, enter pause phase
+      g_bleScanPhaseActive = false;
+      g_bleLastScanStartMs = nowMs;
+
+      // Shut down BLE to free memory during pause
+      if (g_scan->isScanning()) g_scan->stop();
+      NimBLEDevice::deinit(true);  // Release all BLE memory
+      g_scan = nullptr;
+
+      // Shrink vectors to reduce fragmentation
+      if (g_sensors.capacity() > g_sensors.size() + 10) {
+        g_sensors.shrink_to_fit();
+      }
+    }
+  }
+  // Handle pause phase (55 seconds between scans)
+  else {
+    // Check if pause period is over
+    if (nowMs - g_bleLastScanStartMs >= BLE_PERIODIC_PAUSE_MS) {
+      // Reinitialize BLE for new scan
+      NimBLEDevice::init("nettemp-esp32");
+      NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+      g_scan = NimBLEDevice::getScan();
+      g_scan->setScanCallbacks(g_scanCallbacks, /*wantDuplicates=*/true);
+      g_scan->setActiveScan(g_activeScan);
+      g_scan->setInterval(90);  // 90 × 0.625ms = 56.25ms
+      g_scan->setWindow(60);    // 60 × 0.625ms = 37.5ms
+
+      // Start new scan
+      bleConfigureScan();
+    }
+  }
+}
+
+// Legacy function kept for compatibility (now uses periodic scan)
+static void bleEnsureAutoScan() {
+  bleTickPeriodicScan();
+}
+
+#else  // !NETTEMP_ENABLE_BLE
+
+// Stub implementations when BLE is disabled
+static void bleConfigureScan() {}
+static void bleTriggerManualScan() {}
+static void bleTickPeriodicScan() {}
+static void bleEnsureAutoScan() {}
+
+#endif  // NETTEMP_ENABLE_BLE
 
 static std::vector<size_t> buildBleSortedIndex() {
   std::vector<size_t> idx;
@@ -1039,12 +1097,14 @@ static String serverI2cFieldsEnabledString() {
   if (g_srvI2cFields & SRV_I2C_TEMPC) add("tempc");
   if (g_srvI2cFields & SRV_I2C_HUM) add("hum");
   if (g_srvI2cFields & SRV_I2C_PRESS) add("press_hpa");
+  if (g_srvI2cFields & SRV_I2C_LUX) add("lux");
+  if (g_srvI2cFields & SRV_I2C_DIST) add("dist");
   if (!out.length()) out = "(none)";
   return out;
 }
 
 static String serverI2cFieldsAvailableString() {
-  return String("tempc hum press_hpa");
+  return String("tempc hum press_hpa lux dist");
 }
 #else
 static String serverI2cFieldsEnabledString() { return String("DISABLED"); }
@@ -1335,6 +1395,7 @@ static void hcsr04Tick() {
 
 #include "nettemp_power.inc"
 
+#if NETTEMP_ENABLE_BLE
 static void blePurgeUndecoded() {
   // Keep only rows that have decoded sensor values.
   std::vector<SensorRow> kept;
@@ -1345,6 +1406,10 @@ static void blePurgeUndecoded() {
   }
   g_sensors.swap(kept);
 }
+#else
+static void blePurgeUndecoded() {}
+#endif
+
 static void wifiConnectIfConfigured() {
   if (wifiConnected()) return;
   if (g_cfg.wifiSsid.length() == 0) return;
@@ -1396,11 +1461,6 @@ static void tickSendMqtt() {
 
   if (g_cfg.bleSendMqtt) {
     const String dev = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
-    g_prefs.begin("nettemp", true);
-    auto bleNameOr = [&](const String& macNo, const char* fallback) -> String {
-      const String name = g_prefs.getString(prefKeyBleName(macNo).c_str(), "");
-      return name.length() ? name : String(fallback);
-    };
     for (auto& s : g_sensors) {
       if (!bleIsSelected(s)) continue;
       if (isnan(s.temperatureC) && isnan(s.humidityPct) && s.batteryPct < 0 && s.voltageMv < 0 && s.rssi == 0) continue;
@@ -1415,12 +1475,11 @@ static void tickSendMqtt() {
                                 const String& valueStr) {
         publishNettemp(dev, sensorId, sensorType, name, valueStr);
       };
-      auto nameFor = [&](const char* fallback) { return bleNameOr(macNo, fallback); };
+      auto nameFor = [&](const char* fallback) { return macNo + " " + String(fallback); };
       publishBleReadingsMqtt(s, base, g_mqttBleFields, publishReading, nameFor);
 
       s.lastMqttSentMs = now;
     }
-    g_prefs.end();
   }
 
   // Local sensors (I2C / DS18B20 / DHT / VBAT): publish multiple messages (one per sensor_id).
@@ -1470,7 +1529,7 @@ static void tickSendMqtt() {
             char romHex[17]{};
             for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
             // Check if this sensor is selected for sending
-            const String selKey = String("dsSel_") + romHex;
+            const String selKey = prefKeyDsSel(romHex);
             g_prefs.begin("nettemp", true);
             const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
             g_prefs.end();
@@ -1487,21 +1546,22 @@ static void tickSendMqtt() {
           }
         }
 
-        if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
+        if (g_cfg.dhtEnabled && g_cfg.dhtSelected && !isnan(g_dhtTempC)) {
           const String base = dev + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
+          const String dhtLabel = String("DHT") + String(g_cfg.dhtType);
           if (g_mqttGpioFields & SRV_GPIO_TEMPC) {
-            publishReading(base + "_tempc", "temperature", "DHT temp", String(g_dhtTempC, 2));
+            publishReading(base + "_tempc", "temperature", dhtLabel + " temp", String(g_dhtTempC, 2));
           }
           if (g_mqttGpioFields & SRV_GPIO_TEMPF) {
             const float tempf = tempfFromC(g_dhtTempC);
-            publishReading(base + "_tempf", "temperature_f", "DHT tempf", String(tempf, 2));
+            publishReading(base + "_tempf", "temperature_f", dhtLabel + " tempf", String(tempf, 2));
           }
           if ((g_mqttGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
-            publishReading(base + "_hum", "humidity", "DHT hum", String(g_dhtHumPct, 1));
+            publishReading(base + "_hum", "humidity", dhtLabel + " humid", String(g_dhtHumPct, 1));
           }
         }
 
-        if (g_cfg.vbatMode != 0 && g_vbatPct >= 0) {
+        if (g_cfg.vbatMode != 0 && g_cfg.vbatSelected && g_vbatPct >= 0) {
           if (g_mqttGpioFields & SRV_GPIO_BATT) {
             publishReading(dev + "-batt", "battery", "battery", String(g_vbatPct));
           }
@@ -1510,7 +1570,7 @@ static void tickSendMqtt() {
           }
         }
 
-        if (g_cfg.soilEnabled && g_soilRaw >= 0) {
+        if (g_cfg.soilEnabled && g_cfg.soilSelected && g_soilRaw >= 0) {
           const String base = dev + "-soil_adc" + String(g_cfg.soilAdcPin);
           if (g_mqttGpioFields & SRV_GPIO_SOIL_RAW) {
             publishReading(base + "_raw", "soil_raw", "soil raw", String(g_soilRaw));
@@ -1519,7 +1579,7 @@ static void tickSendMqtt() {
             publishReading(base + "_pct", "soil_moisture", "soil", String(g_soilPct, 1));
           }
         }
-        if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm)) {
+        if (g_cfg.hcsr04Enabled && g_cfg.hcsr04Selected && !isnan(g_hcsr04Cm)) {
           const String base = dev + "-hcsr04_gpio" + String(g_cfg.hcsr04TrigPin) + "_" + String(g_cfg.hcsr04EchoPin);
           if (g_mqttGpioFields & SRV_GPIO_DIST) {
             publishReading(base + "_dist", "distance", "distance", String(g_hcsr04Cm, 1));
@@ -1591,11 +1651,6 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
   // BLE sensors
   if (cfg.sendBle) {
     const String deviceId = g_cfg.deviceId.length() ? g_cfg.deviceId : String("nettemp_esp32");
-    g_prefs.begin("nettemp", true);
-    auto nameOr = [&](const String& macNo, const char* fallback) -> String {
-      const String name = g_prefs.getString(prefKeyBleName(macNo).c_str(), "");
-      return name.length() ? name : String(fallback);
-    };
     for (const auto& s : g_sensors) {
       if (!bleIsSelected(s)) continue;
       const String macNo = macNoColonsUpper(s.mac);
@@ -1611,7 +1666,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
       }
       batch.requireApiKey = cfg.requireApiKey;
 
-      auto nameFor = [&](const char* fallback) { return nameOr(macNo, fallback); };
+      auto nameFor = [&](const char* fallback) { return macNo + " " + String(fallback); };
       appendBleReadingsServerLike(batch, s, base, cfg.bleFieldMask, ts, nameFor);
 
       if (!batch.readings.empty()) {
@@ -1624,7 +1679,6 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
         anySent = true;
       }
     }
-    g_prefs.end();
   }
 
   // I2C sensors
@@ -1689,7 +1743,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
       for (size_t i = 0; i < g_dsRoms.size(); i++) {
         char romHex[17]{};
         for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
-        const String selKey = String("dsSel_") + romHex;
+        const String selKey = prefKeyDsSel(romHex);
         const bool selected = g_prefs.getBool(selKey.c_str(), true);
         if (!selected) continue;
 
@@ -1744,10 +1798,8 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
     }
 
     // DHT sensor
-    if (g_cfg.dhtEnabled && (!isnan(g_dhtTempC) || !isnan(g_dhtHumPct))) {
-      g_prefs.begin("nettemp", true);
-      const String dhtName = g_prefs.getString("name_dht", "");
-      g_prefs.end();
+    if (g_cfg.dhtEnabled && g_cfg.dhtSelected && (!isnan(g_dhtTempC) || !isnan(g_dhtHumPct))) {
+      const String dhtLabel = String("DHT") + String(g_cfg.dhtType);
       const String base = deviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
 
       NettempBatch batch;
@@ -1768,7 +1820,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
             .sensorType = "temperature",
             .unit = "°C",
             .timestamp = ts,
-            .friendlyName = dhtName.length() ? dhtName : String("DHT"),
+            .friendlyName = dhtLabel + " temp",
           });
         }
         if (cfg.gpioFieldMask & SRV_GPIO_TEMPF) {
@@ -1778,7 +1830,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
             .sensorType = "temperature_f",
             .unit = "°F",
             .timestamp = ts,
-            .friendlyName = dhtName.length() ? dhtName : String("DHT"),
+            .friendlyName = dhtLabel + " tempf",
           });
         }
       }
@@ -1789,7 +1841,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
           .sensorType = "humidity",
           .unit = "%",
           .timestamp = ts,
-          .friendlyName = dhtName.length() ? dhtName : String("DHT"),
+          .friendlyName = dhtLabel + " humid",
         });
       }
 
@@ -1805,7 +1857,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
     }
 
     // VBAT sensor
-    if (g_cfg.vbatMode != 0 && (g_vbatPct >= 0 || !isnan(g_vbatVolts))) {
+    if (g_cfg.vbatMode != 0 && g_cfg.vbatSelected && (g_vbatPct >= 0 || !isnan(g_vbatVolts))) {
       g_prefs.begin("nettemp", true);
       const String vbatName = g_prefs.getString("name_vbat", "");
       g_prefs.end();
@@ -1854,7 +1906,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
     }
 
     // Soil sensor
-    if (g_cfg.soilEnabled && (g_soilRaw >= 0 || !isnan(g_soilPct))) {
+    if (g_cfg.soilEnabled && g_cfg.soilSelected && (g_soilRaw >= 0 || !isnan(g_soilPct))) {
       g_prefs.begin("nettemp", true);
       const String soilName = g_prefs.getString("name_soil", "");
       g_prefs.end();
@@ -1903,7 +1955,7 @@ static void tickSendHttpChannel(const HttpChannelConfig& cfg) {
     }
 
     // HC-SR04 sensor
-    if (g_cfg.hcsr04Enabled && !isnan(g_hcsr04Cm) && (cfg.gpioFieldMask & SRV_GPIO_DIST)) {
+    if (g_cfg.hcsr04Enabled && g_cfg.hcsr04Selected && !isnan(g_hcsr04Cm) && (cfg.gpioFieldMask & SRV_GPIO_DIST)) {
       g_prefs.begin("nettemp", true);
       const String hcName = g_prefs.getString("name_hcsr04", "");
       g_prefs.end();
@@ -2096,7 +2148,7 @@ static void tickSendWebhook() {
     const String macNoColons = macNoColonsUpper(mac);
     NettempBatch batch;
     batch.deviceId = macNoColons;
-    auto nameFor = [&](const char* fallback) { return String(fallback); };
+    auto nameFor = [&](const char* fallback) { return macNoColons + " " + String(fallback); };
     appendBleReadingsWebhook(batch, s, macNoColons, g_webhookBleFields, ts, nameFor);
     if (!batch.readings.empty()) {
       const String payload = buildWebhookPayload(batch);
@@ -2143,7 +2195,7 @@ static void tickSendWebhook() {
         char romHex[17]{};
         for (int b = 0; b < 8; b++) sprintf(romHex + b * 2, "%02X", g_dsRoms[i][b]);
         // Check if this sensor is selected for sending
-        const String selKey = String("dsSel_") + romHex;
+        const String selKey = prefKeyDsSel(romHex);
         g_prefs.begin("nettemp", true);
         const bool selected = g_prefs.getBool(selKey.c_str(), true); // Default: selected
         g_prefs.end();
@@ -2183,6 +2235,7 @@ static void tickSendWebhook() {
     }
     if (g_cfg.dhtEnabled && !isnan(g_dhtTempC)) {
       const String base = deviceId + "-dht" + String(g_cfg.dhtType) + "_gpio" + String(g_cfg.dhtPin);
+      const String dhtLabel = String("DHT") + String(g_cfg.dhtType);
       if (g_webhookGpioFields & SRV_GPIO_TEMPC) {
         batch.readings.push_back(NettempReading{
           .sensorId = base + "_temp",
@@ -2190,7 +2243,7 @@ static void tickSendWebhook() {
           .sensorType = "temperature",
           .unit = "°C",
           .timestamp = ts,
-          .friendlyName = "DHT temp",
+          .friendlyName = dhtLabel + " temp",
         });
       }
       if (g_webhookGpioFields & SRV_GPIO_TEMPF) {
@@ -2201,7 +2254,7 @@ static void tickSendWebhook() {
           .sensorType = "temperature_f",
           .unit = "°F",
           .timestamp = ts,
-          .friendlyName = "DHT tempf",
+          .friendlyName = dhtLabel + " tempf",
         });
       }
       if ((g_webhookGpioFields & SRV_GPIO_HUM) && !isnan(g_dhtHumPct)) {
@@ -2211,7 +2264,7 @@ static void tickSendWebhook() {
           .sensorType = "humidity",
           .unit = "%",
           .timestamp = ts,
-          .friendlyName = "DHT hum",
+          .friendlyName = dhtLabel + " humid",
         });
       }
     }
@@ -2290,7 +2343,11 @@ static void tickSendWebhook() {
 
 void setup() {
   Serial.begin(NETTEMP_SERIAL_BAUD);
-  delay(1000);
+  delay(1000);  // Wait for USB CDC
+  if (Serial) {
+    Serial.println("\n\n=== NETTEMP CARDPUTER BOOT ===");
+    Serial.flush();
+  }
   LOG_PRINTLN("Nettemp Cardputer starting...");
   g_powerBootMs = millis();
   g_powerBootCycleDone = false;
@@ -2313,7 +2370,8 @@ void setup() {
     LOG_PRINTLN("View crash log in System tab (or download via /crash.txt)\n");
   }
 
-  // Deinit first to avoid "already initialized" error, then reinit with our settings
+  // Configure watchdog (ESP32-S3 has issues with reconfiguration, use default)
+#if !CONFIG_IDF_TARGET_ESP32S3
   esp_task_wdt_deinit();
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms = g_cfg.wdtTimeoutSeconds * 1000UL,  // user-configurable timeout
@@ -2325,38 +2383,42 @@ void setup() {
   LOG_PRINT("Watchdog enabled: ");
   LOG_PRINT(g_cfg.wdtTimeoutSeconds);
   LOG_PRINTLN("s timeout");
+#else
+#endif
 
-  esp_task_wdt_reset();  // Feed watchdog after prefs load
+  SAFE_WDT_RESET();  // Feed watchdog after prefs load
 
 #if NETTEMP_CARDPUTER_UI
   uiSetup();
 #endif
-  showSplash();
+  // showSplash();  // Disabled - not defined when OLED/UI disabled
   yield();
 
-  WiFi.mode(WIFI_STA);
-  wifiConnectIfConfigured();
-  esp_task_wdt_reset();  // Feed watchdog after WiFi attempt
+  // WiFi.mode(WIFI_STA);  // TEMPORARILY DISABLED FOR DEBUGGING
+  // wifiConnectIfConfigured();
+  SAFE_WDT_RESET();  // Feed watchdog after WiFi attempt
   yield();
 
 #if NETTEMP_ENABLE_PORTAL
   g_portalBootMs = millis();
   if (g_portalAuto && g_cfg.wifiSsid.length() == 0) {
     portalStart();
-    esp_task_wdt_reset();  // Feed watchdog after portal start
+    SAFE_WDT_RESET();  // Feed watchdog after portal start
     yield();
   }
 #endif
 
+#if NETTEMP_ENABLE_I2C || NETTEMP_ENABLE_OLED
   i2cInitBus();
+#endif
 #if NETTEMP_ENABLE_OLED
   oledInit();
 #endif
 #if NETTEMP_ENABLE_I2C
-  g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
-  g_i2cSensors = i2cDetectKnownSensors(Wire);
-  esp_task_wdt_reset();  // Feed watchdog after I2C scan
-  if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+  g_i2cDetectedAddrs = i2cScanAllAddresses(*g_i2cBus);
+  g_i2cSensors = i2cDetectKnownSensors(*g_i2cBus);
+  SAFE_WDT_RESET();  // Feed watchdog after I2C scan
+  if (!g_i2cSensors.empty()) i2cUpdateReadings(*g_i2cBus, g_i2cSensors);
   if (g_i2cSensors.empty() && !g_i2cCachedSensors.empty()) {
     g_i2cSensors = g_i2cCachedSensors;
     g_i2cDetectedAddrs.clear();
@@ -2372,15 +2434,22 @@ void setup() {
   dsEnsureBus();
   if (g_cfg.dsEnabled) dsRescan();
   vbatTick();
-  esp_task_wdt_reset();  // Feed watchdog after sensor init
+  SAFE_WDT_RESET();  // Feed watchdog after sensor init
   yield();
 
+#if NETTEMP_ENABLE_BLE
   crashSaveBreadcrumb("INIT_BLE", "setup:NimBLEDevice_init");
+  g_scanCallbacks = new NettempScanCallbacks();
   NimBLEDevice::init("nettemp-esp32");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   g_scan = NimBLEDevice::getScan();
+  g_scan->setScanCallbacks(g_scanCallbacks, /*wantDuplicates=*/true);
+  g_scan->setActiveScan(g_activeScan);
+  g_scan->setInterval(90);  // 90 × 0.625ms = 56.25ms
+  g_scan->setWindow(60);    // 60 × 0.625ms = 37.5ms
   if (g_bleAutoScan) bleConfigureScan();
-  esp_task_wdt_reset();  // Feed watchdog after BLE init
+  SAFE_WDT_RESET();  // Feed watchdog after BLE init
+#endif
 
   // Clear crash breadcrumb after successful initialization
   crashClear();
@@ -2391,7 +2460,7 @@ void setup() {
 
 void loop() {
   // Feed watchdog to prevent auto-reset (signals "still alive")
-  esp_task_wdt_reset();
+  SAFE_WDT_RESET();
 
 #if NETTEMP_CARDPUTER_UI
   M5Cardputer.update();
@@ -2399,17 +2468,12 @@ void loop() {
   uiLoopTick();
 #endif
 
-  // Captive portal (first-time setup)
+  // Captive portal (first-time setup only)
 #if NETTEMP_ENABLE_PORTAL
   portalTick();
   webTickMaybeStartConfig();
-  if (g_portalAuto && !g_portalRunning && !wifiConnected() && g_cfg.wifiSsid.length() > 0) {
-    // If configured WiFi didn't connect shortly after boot, start portal as fallback.
-    // In deep-sleep duty-cycle mode the device should conserve power; avoid starting portal automatically.
-    if (!g_cfg.powerSleepEnabled && g_portalBootMs != 0 && (millis() - g_portalBootMs) > 20'000UL) {
-      portalStart();
-    }
-  }
+  // Note: Portal now only starts on first boot (no WiFi configured).
+  // No automatic fallback if WiFi fails - user must manually reconfigure via serial/reset.
 #endif
 
   // Deep sleep duty-cycle (runs on timer wakeups, and optionally after a boot grace window).
@@ -2451,55 +2515,59 @@ void loop() {
   if (pendingMqtt) {
     tickSendMqtt();
     g_sendStatusMqtt = 2;  // Set status to "success"
-    esp_task_wdt_reset();  // Feed watchdog after send
+    SAFE_WDT_RESET();  // Feed watchdog after send
   }
   if (pendingServer) {
     tickSendServer();
     g_sendStatusServer = 2;  // Set status to "success"
-    esp_task_wdt_reset();  // Feed watchdog after send
+    SAFE_WDT_RESET();  // Feed watchdog after send
   }
   if (pendingLocalServer) {
     tickSendLocalServer();
     g_sendStatusLocalServer = 2;  // Set status to "success"
-    esp_task_wdt_reset();  // Feed watchdog after send
+    SAFE_WDT_RESET();  // Feed watchdog after send
   }
 #if NETTEMP_ENABLE_SERVER
   if (pendingWebhook) {
     tickSendWebhook();
     g_sendStatusWebhook = 2;  // Set status to "success"
-    esp_task_wdt_reset();  // Feed watchdog after send
+    SAFE_WDT_RESET();  // Feed watchdog after send
   }
 #endif
 
   // Regular periodic sending
   tickSendMqtt();
-  esp_task_wdt_reset();  // Feed watchdog after MQTT (can block on connect)
+  SAFE_WDT_RESET();  // Feed watchdog after MQTT (can block on connect)
   tickSendServer();
   tickSendLocalServer();
 #if NETTEMP_ENABLE_SERVER
   tickSendWebhook();
 #endif
-  esp_task_wdt_reset();  // Feed watchdog after all sends
+  SAFE_WDT_RESET();  // Feed watchdog after all sends
 
+#if NETTEMP_ENABLE_BLE
   // Ensure background BLE scan stays running.
   const uint32_t nowMs = millis();
   if (nowMs - g_lastBleEnsureMs >= 2000) {
     g_lastBleEnsureMs = nowMs;
     bleEnsureAutoScan();
   }
+#else
+  const uint32_t nowMs = millis();
+#endif
 
 #if NETTEMP_ENABLE_I2C
   if (nowMs - g_lastI2cPollMs >= 2000) {
     g_lastI2cPollMs = nowMs;
-    if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+    if (!g_i2cSensors.empty()) i2cUpdateReadings(*g_i2cBus, g_i2cSensors);
   }
   if (g_i2cSensors.empty()) {
     static uint32_t s_lastI2cRescanMs = 0;
     if (s_lastI2cRescanMs == 0 || (nowMs - s_lastI2cRescanMs) >= 10'000UL) {
       s_lastI2cRescanMs = nowMs;
-      g_i2cDetectedAddrs = i2cScanAllAddresses(Wire);
-      g_i2cSensors = i2cDetectKnownSensors(Wire);
-      if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+      g_i2cDetectedAddrs = i2cScanAllAddresses(*g_i2cBus);
+      g_i2cSensors = i2cDetectKnownSensors(*g_i2cBus);
+      if (!g_i2cSensors.empty()) i2cUpdateReadings(*g_i2cBus, g_i2cSensors);
       if (g_i2cSelDefined) i2cApplySelectionToDetected();
     }
   }

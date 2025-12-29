@@ -14,27 +14,7 @@ static bool vbatReadVolts(float& outV) {
   if (g_cfg.vbatMode == 0) return false;
 
   if (g_cfg.vbatMode == 2) {
-#if NETTEMP_CARDPUTER_UI
-    // Cardputer PMIC (best-effort; only if the M5Cardputer Power API provides it).
-    // M5Cardputer v1.1.1: Power API may not be available; fallback to ADC.
-    // Try using M5.Power if available (M5Unified API).
-    #ifdef ARDUINO_M5STACK_CARDPUTER
-    if (M5.Power.isEnabled()) {
-      float v = M5.Power.getBatteryVoltage() / 1000.0f;  // mV -> V
-      if (!isnan(v) && v > 1.0f && v < 6.0f) {
-        outV = v;
-        return true;
-      }
-      int pct = M5.Power.getBatteryLevel();
-      if (pct >= 0 && pct <= 100) {
-        g_vbatPct = pct;
-        g_vbatLastSeenMs = millis();
-        return false;
-      }
-    }
-    #endif
-#endif
-    // If PMIC not available, continue to ADC path.
+    // PMIC path handled in vbatTick (uses M5Unified Power API).
   }
 
   // ADC mode (or PMIC fallback)
@@ -82,11 +62,39 @@ static bool vbatReadVolts(float& outV) {
   return false;
 }
 
+static bool vbatReadPmic(float& outV, int& outPct) {
+  outV = NAN;
+  outPct = -1;
+#if NETTEMP_CARDPUTER_UI
+  const int mv = M5Cardputer.Power.getBatteryVoltage();
+  if (mv > 0) outV = (float)mv / 1000.0f;
+  const int lvl = M5Cardputer.Power.getBatteryLevel();
+  if (lvl >= 0) outPct = std::min(100, std::max(0, lvl));
+  return (!isnan(outV) || outPct >= 0);
+#else
+  return false;
+#endif
+}
+
 static void vbatTick() {
   if (g_cfg.vbatMode == 0) return;
   const uint32_t nowMs = millis();
   // Don't spam ADC reads; 1s is plenty (and in sleep cycle we call it explicitly).
   if (g_vbatLastSeenMs != 0 && (nowMs - g_vbatLastSeenMs) < 1000UL) return;
+
+  if (g_cfg.vbatMode == 2) {
+    float v = NAN;
+    int pct = -1;
+    if (!vbatReadPmic(v, pct)) return;
+    if (!isnan(v) && v >= 1.0f && v <= 6.0f) g_vbatVolts = v;
+    if (pct >= 0) {
+      g_vbatPct = pct;
+    } else if (!isnan(v) && v >= 1.0f && v <= 6.0f) {
+      g_vbatPct = vbatToPercent(v);
+    }
+    g_vbatLastSeenMs = nowMs;
+    return;
+  }
 
   float v = NAN;
   if (!vbatReadVolts(v)) return;
@@ -154,6 +162,7 @@ static void powerSleepCycleMaybe() {
 
   g_powerCycleDoneThisBoot = true;
 
+#if NETTEMP_ENABLE_BLE
   // Short BLE scan burst (default 5s).
   if (g_scan) {
     bleStartScanFor(g_cfg.powerBleScanSeconds * 1000UL, /*keepExistingResults=*/false);
@@ -164,9 +173,10 @@ static void powerSleepCycleMaybe() {
     }
     g_scan->stop();
   }
+#endif
 
 #if NETTEMP_ENABLE_I2C
-  if (!g_i2cSensors.empty()) i2cUpdateReadings(Wire, g_i2cSensors);
+  if (!g_i2cSensors.empty()) i2cUpdateReadings(*g_i2cBus, g_i2cSensors);
 #endif
   dsTick();
   dhtTick();

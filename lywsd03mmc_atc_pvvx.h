@@ -22,4 +22,5 @@ struct LYWSD03Reading {
 //
 // The goal here is pragmatic compatibility, not strict format coverage.
 bool parseLywsd03FromServiceData(const std::string& serviceData, LYWSD03Reading& out);
+bool parseLywsd03FromServiceDataAtc1441(const std::string& serviceData, LYWSD03Reading& out);
 bool parseLywsd03FromManufacturerData(const std::string& mfgData, LYWSD03Reading& out);

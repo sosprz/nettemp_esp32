@@ -79,6 +79,30 @@ static bool parseAtc181AFrame(const uint8_t* buf, size_t len, LYWSD03Reading& ou
   return false;
 }
 
+static bool parseAtc1441Frame(const uint8_t* buf, size_t len, LYWSD03Reading& out) {
+  if (len < 13) return false;
+  out.has_mac = true;
+  for (int i = 0; i < 6; i++) out.mac[i] = buf[i];
+
+  const uint16_t tempX10 = readU16BE(buf + 6);
+  const float tempC = (float)tempX10 / 10.0f;
+  const float hum = (float)buf[8];
+  const int batt = (int)buf[9];
+  const int mv = (int)readU16BE(buf + 10);
+  const int counter = (int)buf[12];
+
+  if (!looksSane(tempC, hum, batt)) return false;
+  if (!looksSaneVoltageMv(mv)) return false;
+
+  out.temperature_c = tempC;
+  out.humidity_pct = hum;
+  out.battery_pct = batt;
+  out.voltage_mv = mv;
+  out.counter = counter;
+  out.flags = -1;
+  return true;
+}
+
 } // namespace
 
 bool parseLywsd03FromServiceData(const std::string& serviceData, LYWSD03Reading& out) {
@@ -95,6 +119,17 @@ bool parseLywsd03FromServiceData(const std::string& serviceData, LYWSD03Reading&
     return parseAtc181AFrame(b + 2, n - 2, out);
   }
 
+  return false;
+}
+
+bool parseLywsd03FromServiceDataAtc1441(const std::string& serviceData, LYWSD03Reading& out) {
+  const auto* b = reinterpret_cast<const uint8_t*>(serviceData.data());
+  const size_t n = serviceData.size();
+  if (!b || n < 13) return false;
+  if (parseAtc1441Frame(b, n, out)) return true;
+  if (n >= 15 && b[0] == 0x1A && b[1] == 0x18) {
+    return parseAtc1441Frame(b + 2, n - 2, out);
+  }
   return false;
 }
 

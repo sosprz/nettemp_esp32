@@ -125,6 +125,13 @@ static String buildConfigPage(WebPrefsView& prefs) {
                 "data.append('firmware',fileInput.files[0]);"
                 "xhr.send(data);"
                 "}"
+                "function bleScanNow(){"
+                "const msg=document.getElementById('bleScanMsg');"
+                "if(msg) msg.style.display='block';"
+                "fetch('/ble_scan_now',{method:'POST'})"
+                ".then(()=>setTimeout(()=>location.reload(),5000))"
+                ".catch(()=>{if(msg) msg.textContent='Scan failed';});"
+                "}"
                 "window.addEventListener('load',()=>{"
                 "const id=localStorage.getItem('nettemp_tab')||'tab-status';"
                 "showTab(id);"
@@ -138,17 +145,21 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p>Device IP: <code>" + WiFi.localIP().toString() + "</code> | Device ID: <code>" + deviceId + "</code></p>";
   body += "</div></div>";
 
-  body += "<div class='tabs'>"
-          "<button type='button' class='tabbtn' id='btn-tab-status' onclick=\"showTab('tab-status')\">Status</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-ble' onclick=\"showTab('tab-ble')\">BLE</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-i2c' onclick=\"showTab('tab-i2c')\">I2C</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-gpio' onclick=\"showTab('tab-gpio')\">GPIO</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-oled' onclick=\"showTab('tab-oled')\">OLED</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-channels' onclick=\"showTab('tab-channels')\">Channels</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-device' onclick=\"showTab('tab-device')\">Device</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-admin' onclick=\"showTab('tab-admin')\">Admin</button>"
-          "<button type='button' class='tabbtn' id='btn-tab-system' onclick=\"showTab('tab-system')\">System</button>"
-          "</div>";
+  body += "<div class='tabs'>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-status' onclick=\"showTab('tab-status')\">Status</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-ble' onclick=\"showTab('tab-ble')\">BLE</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-i2c' onclick=\"showTab('tab-i2c')\">I2C</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-gpio' onclick=\"showTab('tab-gpio')\">GPIO</button>";
+#if NETTEMP_ENABLE_OLED
+  if (g_cfg.oledEnabled) {
+    body += "<button type='button' class='tabbtn' id='btn-tab-oled' onclick=\"showTab('tab-oled')\">OLED</button>";
+  }
+#endif
+  body += "<button type='button' class='tabbtn' id='btn-tab-channels' onclick=\"showTab('tab-channels')\">Channels</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-device' onclick=\"showTab('tab-device')\">Device</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-admin' onclick=\"showTab('tab-admin')\">Admin</button>";
+  body += "<button type='button' class='tabbtn' id='btn-tab-system' onclick=\"showTab('tab-system')\">System</button>";
+  body += "</div>";
 
   auto renderTabStatus = [&]() {
   body += "<div class='card tab' id='tab-status'>";
@@ -189,8 +200,12 @@ static String buildConfigPage(WebPrefsView& prefs) {
     const bool showRssi = (g_srvBleFields & SRV_BLE_RSSI);
 #if NETTEMP_ENABLE_I2C
     const bool showPress = (g_srvI2cFields & SRV_I2C_PRESS);
+    const bool showLux = (g_srvI2cFields & SRV_I2C_LUX);
+    const bool showDist = (g_srvI2cFields & SRV_I2C_DIST);
 #else
     const bool showPress = false;
+    const bool showLux = false;
+    const bool showDist = false;
 #endif
     const bool showSoilRaw = g_cfg.soilEnabled;
     const bool showSoilPct = g_cfg.soilEnabled;
@@ -209,6 +224,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
     body += "<h4 style='margin:8px 0 6px'>Sensors</h4>";
 
     bool anyStatusTable = false;
+#if NETTEMP_ENABLE_BLE
     {
       const auto idx = buildBleSortedIndex();
       std::vector<size_t> bleIdx;
@@ -282,6 +298,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
         anyStatusTable = true;
       }
     }
+#endif  // NETTEMP_ENABLE_BLE
 
     {
 #if NETTEMP_ENABLE_I2C
@@ -289,7 +306,9 @@ static String buildConfigPage(WebPrefsView& prefs) {
       for (const auto& s : g_i2cSensors) {
         if (!s.selected) continue;
         if (!s.reading.ok) continue;
-        const bool hasValues = !isnan(s.reading.temperature_c) || !isnan(s.reading.humidity_pct) || !isnan(s.reading.pressure_hpa);
+        const bool hasValues = !isnan(s.reading.temperature_c) || !isnan(s.reading.humidity_pct) ||
+                               !isnan(s.reading.pressure_hpa) || !isnan(s.reading.light_lux) ||
+                               !isnan(s.reading.distance_mm);
         if (!hasValues) continue;
         anyI2c = true;
         break;
@@ -302,6 +321,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
         if (showTempf) body += "<th>tempf</th>";
         if (showHum) body += "<th>hum</th>";
         if (showPress) body += "<th>press_hpa</th>";
+        if (showLux) body += "<th>lux</th>";
+        if (showDist) body += "<th>dist</th>";
         body += "<th>Age(s)</th>";
         body += "</tr>";
 
@@ -311,7 +332,9 @@ static String buildConfigPage(WebPrefsView& prefs) {
           const auto& s = g_i2cSensors[i];
           if (!s.selected) continue;
           if (!s.reading.ok) continue;
-          const bool hasValues = !isnan(s.reading.temperature_c) || !isnan(s.reading.humidity_pct) || !isnan(s.reading.pressure_hpa);
+          const bool hasValues = !isnan(s.reading.temperature_c) || !isnan(s.reading.humidity_pct) ||
+                                 !isnan(s.reading.pressure_hpa) || !isnan(s.reading.light_lux) ||
+                                 !isnan(s.reading.distance_mm);
           if (!hasValues) continue;
           i2cIdx.push_back(i);
         }
@@ -353,6 +376,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
           if (showTempf) body += "<td>" + (isnan(s.reading.temperature_c) ? String("-") : String((s.reading.temperature_c * 9.0f / 5.0f) + 32.0f, 2)) + "</td>";
           if (showHum) body += "<td>" + (isnan(s.reading.humidity_pct) ? String("-") : String(s.reading.humidity_pct, 1)) + "</td>";
           if (showPress) body += "<td>" + (isnan(s.reading.pressure_hpa) ? String("-") : String(s.reading.pressure_hpa, 1)) + "</td>";
+          if (showLux) body += "<td>" + (isnan(s.reading.light_lux) ? String("-") : String(s.reading.light_lux, 1)) + "</td>";
+          if (showDist) body += "<td>" + (isnan(s.reading.distance_mm) ? String("-") : String(s.reading.distance_mm / 10.0f, 1)) + "</td>";
           const uint32_t ageS = (s.last_seen_ms > 0 && nowMs >= s.last_seen_ms) ? ((nowMs - s.last_seen_ms) / 1000UL) : 0;
           body += "<td>" + String((unsigned long)ageS) + "</td>";
           body += "</tr>";
@@ -519,9 +544,11 @@ static String buildConfigPage(WebPrefsView& prefs) {
   };
   renderTabStatus();
 
+#if NETTEMP_ENABLE_BLE
   auto renderTabBle = [&]() {
   body += "<div class='card tab hidden' id='tab-ble'>";
   body += "<h3>BLE</h3>";
+  body += "<p style='margin:0 0 8px;font-size:13px;color:var(--muted)'>Periodic scanning: 15s scan / 55s off (BLE disabled during pause to free memory)</p>";
   body += "<form method='POST' action='/save_ble'>";
   body += "<label><input type='checkbox' name='bleAuto' value='1' " + String(g_bleAutoScan ? "checked" : "") + "> Enable</label>";
   body += "<p style='margin:12px 0 0'><button type='submit'>Save</button></p>";
@@ -534,12 +561,13 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<input type='number' min='5' max='200' value='" + String((unsigned)g_bleMaxResults) + "' id='bleMaxInput' style='width:55px;padding:3px;font-size:13px'/>";
   body += "</label>";
   body += "<button type='button' onclick='fetch(\"/save_ble_max?max=\"+document.getElementById(\"bleMaxInput\").value,{method:\"POST\"}).then(()=>location.reload())'>Save</button>";
-  body += "<button type='button' onclick='location.reload()'>🔍 Scan</button>";
+  body += "<button type='button' onclick='bleScanNow()'>🔍 Scan</button>";
   body += "<button type='button' onclick='if(confirm(\"Remove all unselected sensors?\"))fetch(\"/clean_sensors\",{method:\"POST\"}).then(()=>location.reload())'>🗑️ Clean</button>";
   body += "</div>";
-  body += "<p style='margin:0 0 12px;font-size:13px;color:var(--muted)'>Manual overrides persist across reboot (use <code>Manual</code> checkbox).</p>";
+  body += "<div id='bleScanMsg' style='display:none;padding:8px;margin:8px 0;background:var(--accent);color:white;border-radius:4px;text-align:center;font-weight:600'>⏳ Scanning for 15 seconds...</div>";
+  body += "<p style='margin:0 0 12px;font-size:13px;color:var(--muted)'>Selected BLE sensors are saved and used as scan filters.</p>";
   body += "<form method='POST' action='/save_sensors'>";
-  body += "<div class='tablewrap'><table><tr><th>Send</th><th>Manual</th><th>MAC</th><th>Name</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>batt</th></tr>";
+  body += "<div class='tablewrap'><table><tr><th>Send</th><th>MAC</th><th>Name</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>batt</th></tr>";
   const uint32_t nowMs = millis();
   const auto idx = buildBleSortedIndex();
   std::vector<size_t> bleCfgIdx;
@@ -571,7 +599,6 @@ static String buildConfigPage(WebPrefsView& prefs) {
 
     body += "<tr>";
     body += "<td><input type='checkbox' name='sel_" + macNo + "' value='1' " + String(selected ? "checked" : "") + "></td>";
-    body += "<td><input type='checkbox' name='man_" + macNo + "' value='1' " + String(manual ? "checked" : "") + "></td>";
     const String nameVal = prefGetName(prefKeyBleName(macNo), "");
     body += "<td><code>" + mac + "</code></td>";
     body += "<td><input name='bleName_" + macNo + "' value='" + htmlEscape(nameVal) + "' placeholder='name'/></td>";
@@ -587,11 +614,30 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</div>";
   };
   renderTabBle();
+#endif  // NETTEMP_ENABLE_BLE
 
   auto renderTabI2c = [&]() {
   body += "<div class='card tab hidden' id='tab-i2c'>";
   body += "<h3>I2C</h3>";
 #if NETTEMP_ENABLE_I2C
+  int i2cSdaActive = g_cfg.i2cSdaPin;
+  int i2cSclActive = g_cfg.i2cSclPin;
+#if NETTEMP_CARDPUTER_UI
+  if (i2cSdaActive < 0 || i2cSclActive < 0) {
+    i2cSdaActive = 8;
+    i2cSclActive = 9;
+  }
+#endif
+  const bool i2cPinsDefault = (g_cfg.i2cSdaPin < 0 || g_cfg.i2cSclPin < 0);
+  if (i2cPinsDefault) {
+#if NETTEMP_CARDPUTER_UI
+    body += "<p class='muted' style='margin:4px 0 0'>Active pins: SDA=" + String(i2cSdaActive) + " SCL=" + String(i2cSclActive) + " (default)</p>";
+#else
+    body += "<p class='muted' style='margin:4px 0 0'>Active pins: board defaults</p>";
+#endif
+  } else {
+    body += "<p class='muted' style='margin:4px 0 0'>Active pins: SDA=" + String(i2cSdaActive) + " SCL=" + String(i2cSclActive) + "</p>";
+  }
   body += "<datalist id='i2cPins'>"
           "<option value='-1'></option>"
           "<option value='21'></option><option value='22'></option>"
@@ -635,7 +681,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
       body += "• Floating SDA/SCL lines<br>";
       body += "• Wrong GPIO pins configured<br>";
       body += "<br><b>FIX:</b> Add 4.7kΩ pull-ups from SDA→3.3V and SCL→3.3V<br>";
-      body += "Current pins: SDA=" + String(g_cfg.i2cSdaPin) + ", SCL=" + String(g_cfg.i2cSclPin);
+      body += "Current pins: SDA=" + String(i2cSdaActive) + ", SCL=" + String(i2cSclActive);
       body += "</div>";
     }
 
@@ -651,7 +697,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
   } else {
     const uint32_t nowMs = millis();
     body += "<form method='POST' action='/save_i2c'>";
-    body += "<div class='tablewrap'><table><tr><th>Send</th><th>Name</th><th>Type</th><th>Addr</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>press_hpa</th></tr>";
+    body += "<div class='tablewrap'><table><tr><th>Send</th><th>Name</th><th>Type</th><th>Addr</th><th>Age(s)</th><th>tempc</th><th>hum</th><th>press_hpa</th><th>lux</th><th>dist</th></tr>";
     std::vector<uint8_t> sortedAddrs = filteredAddrs;
     std::sort(sortedAddrs.begin(), sortedAddrs.end(), [&](uint8_t a, uint8_t b) {
       const I2cSensorInfo* sa = nullptr;
@@ -707,6 +753,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
       body += "<td>" + (match && match->reading.ok && !isnan(match->reading.temperature_c) ? String(match->reading.temperature_c, 2) : String("-")) + "</td>";
       body += "<td>" + (match && match->reading.ok && !isnan(match->reading.humidity_pct) ? String(match->reading.humidity_pct, 1) : String("-")) + "</td>";
       body += "<td>" + (match && match->reading.ok && !isnan(match->reading.pressure_hpa) ? String(match->reading.pressure_hpa, 1) : String("-")) + "</td>";
+      body += "<td>" + (match && match->reading.ok && !isnan(match->reading.light_lux) ? String(match->reading.light_lux, 1) : String("-")) + "</td>";
+      body += "<td>" + (match && match->reading.ok && !isnan(match->reading.distance_mm) ? String(match->reading.distance_mm / 10.0f, 1) : String("-")) + "</td>";
       body += "</tr>";
     }
     body += "</table></div>";
@@ -715,12 +763,15 @@ static String buildConfigPage(WebPrefsView& prefs) {
   }
   body += "<p style='margin-top:16px'>Supported drivers:</p>";
   body += "<ul>"
+          "<li><code>BMP180</code> (0x76/0x77)</li>"
           "<li><code>BMP280</code> (0x76/0x77)</li>"
           "<li><code>BME280</code> (0x76/0x77)</li>"
           "<li><code>TMP102</code> (0x48-0x4B)</li>"
           "<li><code>SHT3X</code> (0x44/0x45)</li>"
           "<li><code>HTU21D/SHT21/SI7021</code> (0x40)</li>"
           "<li><code>AHT10/20/21/30</code> (0x38)</li>"
+          "<li><code>TSL2561</code> (0x29/0x39/0x49)</li>"
+          "<li><code>VL53L0X</code> (0x29)</li>"
           "</ul>";
 #else
   body += "<p>I2C support is disabled in this build (<code>NETTEMP_ENABLE_I2C=0</code>).</p>";
@@ -743,7 +794,6 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<button type='submit' name='dsScan' value='1'>Scan Now</button> ";
   body += "<small style='color:var(--muted)'>(Scans without saving)</small></p>";
   if (!g_dsRoms.empty()) {
-    Serial.printf("Web: Building GPIO form with %u DS18B20 sensors\n", (unsigned)g_dsRoms.size());
     body += "<div class='tablewrap'><table><tr><th>Send</th><th>Name</th><th>#</th><th>ROM</th><th>tempc</th></tr>";
     std::vector<size_t> dsIdx;
     dsIdx.reserve(g_dsRoms.size());
@@ -766,9 +816,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
       const String nameKey = prefKeyDsName(romHex);
       const String nameVal = prefGetDsName(romHex, "");
       const String linuxId = dsRomLinuxId(g_dsRoms[idx], 0, false);
-      const String selKey = String("dsSel_") + romHex;
+      const String selKey = prefKeyDsSel(romHex);
       const bool selected = prefGetBool(selKey, true); // Default: selected
-      Serial.printf("  [%u] ROM=%s, nameKey=%s, name='%s', selKey=%s, sel=%s\n", (unsigned)idx, romHex, nameKey.c_str(), nameVal.c_str(), selKey.c_str(), selected ? "YES" : "NO");
       body += "<tr>";
       body += "<td><input type='checkbox' name='" + selKey + "' value='1' " + String(selected ? "checked" : "") + "></td>";
       body += "<td><input name='dsName_" + String(romHex) + "' value='" + htmlEscape(nameVal) + "' placeholder='" + htmlEscape(String("DS18B20 ") + linuxId) + "'/></td>";
@@ -786,6 +835,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<form method='POST' action='/save_gpio'>";
   body += "<input type='hidden' name='sensor' value='dht'/>";
   body += "<label><input type='checkbox' name='dhtEn' value='1' " + String(g_cfg.dhtEnabled ? "checked" : "") + "> Enable DHT</label>";
+  body += "<label><input type='checkbox' name='dhtSel' value='1' " + String(g_cfg.dhtSelected ? "checked" : "") + "> Send/Show (channels + screen)</label>";
   body += "<label>Name</label><input name='name_dht' value='" + htmlEscape(prefGetName("name_dht", "")) + "' placeholder='name'/>";
   body += "<div class='grid2'><div><label>DHT GPIO</label><input name='dhtPin' value='" + String(g_cfg.dhtPin) + "'/></div>";
   body += "<div><label>DHT type</label><input name='dhtType' value='" + String(g_cfg.dhtType) + "' placeholder='11 or 22'/></div></div>";
@@ -799,6 +849,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<form method='POST' action='/save_gpio'>";
   body += "<input type='hidden' name='sensor' value='soil'/>";
   body += "<label><input type='checkbox' name='soilEn' value='1' " + String(g_cfg.soilEnabled ? "checked" : "") + "> Enable capacitive soil moisture sensor v1.2 (ADC)</label>";
+  body += "<label><input type='checkbox' name='soilSel' value='1' " + String(g_cfg.soilSelected ? "checked" : "") + "> Send (channels)</label>";
   body += "<label>Name</label><input name='name_soil' value='" + htmlEscape(prefGetName("name_soil", "")) + "' placeholder='name'/>";
   body += "<label>Soil ADC pin</label><input name='soilPin' value='" + String(g_cfg.soilAdcPin) + "'/>";
   body += "<div class='grid2'><div><label>Dry raw (0%)</label><input name='soilDry' value='" + String(g_cfg.soilDryRaw) + "'/></div>";
@@ -813,6 +864,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<form method='POST' action='/save_gpio'>";
   body += "<input type='hidden' name='sensor' value='hcsr04'/>";
   body += "<label><input type='checkbox' name='hcEn' value='1' " + String(g_cfg.hcsr04Enabled ? "checked" : "") + "> Enable HC-SR04 distance sensor</label>";
+  body += "<label><input type='checkbox' name='hcSel' value='1' " + String(g_cfg.hcsr04Selected ? "checked" : "") + "> Send/Show (channels + screen)</label>";
   body += "<label>Name</label><input name='name_hcsr04' value='" + htmlEscape(prefGetName("name_hcsr04", "")) + "' placeholder='name'/>";
   body += "<div class='grid2'><div><label>Trig GPIO</label><input name='hcTrig' value='" + String(g_cfg.hcsr04TrigPin) + "'/></div>";
   body += "<div><label>Echo GPIO</label><input name='hcEcho' value='" + String(g_cfg.hcsr04EchoPin) + "'/></div></div>";
@@ -825,18 +877,23 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<form method='POST' action='/save_gpio'>";
   body += "<input type='hidden' name='sensor' value='vbat'/>";
   body += "<label><input type='checkbox' name='vbEn' value='1' " + String(g_cfg.vbatMode != 0 ? "checked" : "") + "> Enable VBAT</label>";
+  body += "<label><input type='checkbox' name='vbSel' value='1' " + String(g_cfg.vbatSelected ? "checked" : "") + "> Send (channels)</label>";
   body += "<label>Name</label><input name='name_vbat' value='" + htmlEscape(prefGetName("name_vbat", "")) + "' placeholder='name'/>";
   body += "<label>Mode</label><select name='vbMode'>"
           "<option value='1' " + String(g_cfg.vbatMode == 1 ? "selected" : "") + ">adc</option>"
           "<option value='2' " + String(g_cfg.vbatMode == 2 ? "selected" : "") + ">pmic</option>"
           "</select>";
-  body += "<label>ADC pin (adc mode)</label><input name='vbPin' value='" + String(g_cfg.vbatAdcPin) + "'/>";
-  body += "<label>Divider ratio (x1000)</label><input name='vbDiv' value='" + String((unsigned)g_cfg.vbatDividerX1000) + "' placeholder='2000 = 2.0'/>";
-  body += "<p class='muted' style='margin-top:-8px'>Tip: VBAT = ADC × ratio. Current ratio: <code>" +
-          String(((float)g_cfg.vbatDividerX1000) / 1000.0f, 3) +
-          "</code>. Typical range: <code>1000</code>–<code>5000</code>.</p>";
-  body += "<div class='grid2'><div><label>Full (mV)</label><input name='vbFull' value='" + String((unsigned)g_cfg.vbatFullMv) + "'/></div>";
-  body += "<div><label>Empty (mV)</label><input name='vbEmp' value='" + String((unsigned)g_cfg.vbatEmptyMv) + "'/></div></div>";
+  if (g_cfg.vbatMode == 1) {
+    body += "<label>ADC pin (adc mode)</label><input name='vbPin' value='" + String(g_cfg.vbatAdcPin) + "'/>";
+    body += "<label>Divider ratio (x1000)</label><input name='vbDiv' value='" + String((unsigned)g_cfg.vbatDividerX1000) + "' placeholder='2000 = 2.0'/>";
+    body += "<p class='muted' style='margin-top:-8px'>Tip: VBAT = ADC × ratio. Current ratio: <code>" +
+            String(((float)g_cfg.vbatDividerX1000) / 1000.0f, 3) +
+            "</code>. Typical range: <code>1000</code>–<code>5000</code>.</p>";
+    body += "<div class='grid2'><div><label>Full (mV)</label><input name='vbFull' value='" + String((unsigned)g_cfg.vbatFullMv) + "'/></div>";
+    body += "<div><label>Empty (mV)</label><input name='vbEmp' value='" + String((unsigned)g_cfg.vbatEmptyMv) + "'/></div></div>";
+  } else if (g_cfg.vbatMode == 2) {
+    body += "<p class='muted'>PMIC mode uses device power chip readings.</p>";
+  }
   body += "<label><input type='checkbox' name='vbSV' value='1' " + String(g_cfg.vbatSendVolt ? "checked" : "") + "> Send voltage (vbat) in addition to percent</label>";
   body += "<p>Last VBAT: ";
   if (g_cfg.vbatMode == 0) {
@@ -871,6 +928,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   };
   renderTabGpio();
 
+#if NETTEMP_ENABLE_OLED
+  if (g_cfg.oledEnabled) {
   auto renderTabOled = [&]() {
   body += "<div class='card tab hidden' id='tab-oled'>";
   body += "<h3>OLED SSD1306</h3>";
@@ -883,6 +942,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
           "</select>";
   body += "<p class='muted'>I2C address default: <code>0x3C</code></p>";
 
+#if NETTEMP_ENABLE_BLE
   body += "<h4 style='margin:12px 0 6px'>BLE sensors</h4>";
   body += "<div class='tablewrap'><table><tr><th>Show</th><th>Name</th><th>tempc</th><th>hum</th><th>volt</th><th>batt</th></tr>";
   for (const auto& s : g_sensors) {
@@ -907,6 +967,7 @@ static String buildConfigPage(WebPrefsView& prefs) {
     body += "</tr>";
   }
   body += "</table></div>";
+#endif  // NETTEMP_ENABLE_BLE
 
 #if NETTEMP_ENABLE_I2C
   body += "<h4 style='margin:12px 0 6px'>I2C sensors</h4>";
@@ -997,6 +1058,8 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "</div>";
   };
   renderTabOled();
+  }
+#endif
 
   auto renderTabChannels = [&]() {
   body += "<div class='card tab hidden' id='tab-channels'>";
@@ -1166,6 +1229,13 @@ static String buildConfigPage(WebPrefsView& prefs) {
   body += "<p id='ota-progress' style='color:var(--muted);margin:4px 0 0'></p>";
   body += "</form>";
   body += "</div>";
+  body += "<div class='tile'>";
+  body += "<h4 style='margin:0 0 8px'>Reboot device</h4>";
+  body += "<p style='color:var(--muted);margin:0 0 8px'>Restart the ESP32 device</p>";
+  body += "<form method='POST' action='/reboot' onsubmit='return confirm(\"Reboot device now?\")'>";
+  body += "<p style='margin:0'><button type='submit'>Reboot</button></p>";
+  body += "</form>";
+  body += "</div>";
   body += "</div>";
   body += "</div>";
   };
@@ -1239,7 +1309,16 @@ static String buildConfigPage(WebPrefsView& prefs) {
   }
 
   body += "<p>WiFi: <code>" + String(wifiConnected() ? "connected" : "not connected") + "</code>";
-  body += " | BLE scan: <code>on</code> (" + String(g_activeScan ? "active" : "passive") + ")";
+#if NETTEMP_ENABLE_BLE
+  if (g_bleAutoScan) {
+    const char* scanState = g_bleScanPhaseActive ? "scanning" : "off";
+    body += " | BLE: <code>" + String(scanState) + "</code> (" + String(g_activeScan ? "active" : "passive") + ", 15s/55s)";
+  } else {
+    body += " | BLE: <code>disabled</code>";
+  }
+#else
+  body += " | BLE: <code>not compiled</code>";
+#endif
   body += "</p>";
   body += "<p>Power sleep: <code>" + String(g_cfg.powerSleepEnabled ? "on" : "off") + "</code> | sleep_s <code>" + String((unsigned long)g_cfg.powerSleepSeconds) +
           "</code> | ble_scan_s <code>" + String((unsigned long)g_cfg.powerBleScanSeconds) + "</code></p>";

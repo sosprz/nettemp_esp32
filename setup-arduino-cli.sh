@@ -52,6 +52,7 @@ LIBRARIES=(
     "NimBLE-Arduino"
     "Adafruit GFX Library"
     "Adafruit SSD1306"
+    "Adafruit_VL53L0X"
     "PubSubClient"
     "OneWire"
     "DallasTemperature"

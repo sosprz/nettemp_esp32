@@ -1,23 +1,24 @@
 ## Nettemp ESP32 (Cardputer): BLE thermometer viewer (Xiaomi LYWSD03MMC)
 
-Status: works OK on a single ESP32 device; **Cardputer support is still in progress**.
+Status: **Fully supported** on both standard ESP32 and M5Stack Cardputer ESP32-S3.
+
+**Note:** BLE scanning may occasionally trigger watchdog timer resets, but the device automatically recovers and continues operation.
 
 More info: https://nettemp.pl
 
 Arduino sketch for **any ESP32** as a Nettemp client (also works great with **M5Stack Cardputer / ESP32-S3**) that:
 - scans BLE in passive/active mode and decodes **LYWSD03MMC** (ATC/PVVX advertising),
-- reads I2C sensors (**BMP280**, **BME280**, **TMP102**, **SHT3x**, **SHT21/HTU21D/SI7021**, **AHT10/20/21/30**),
+- reads I2C sensors (**BMP180**, **BMP280**, **BME280**, **TMP102**, **SHT3x**, **SHT21/HTU21D/SI7021**, **AHT10/20/21/30**, **TSL2561** light, **VL53L0X** distance),
 - reads GPIO sensors like **DHT11/DHT22**, **DS18B20**, **HC-SR04** (ultrasonic), and **capacitive soil (ADC)**,
 - supports **VBAT** reading and **deep sleep** (duty-cycle),
 - shows readings on **Cardputer display** or **SSD1306 OLED**,
 - has **captive portal + web UI** (Basic Auth) for config,
 - can send data to **MQTT**, **Nettemp Cloud API**, or **Webhook (JSON)**,
-- supports **OTA firmware upload** from the web UI,
-- can show a QR to import its API token into `app.nettemp.pl`.
+- supports **OTA firmware upload** from the web UI.
 
 ### Quick start (Arduino IDE)
 1. Install ESP32 boards support (Espressif).
-2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `PubSubClient` (optional), `OneWire` (optional).
+2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `Adafruit_VL53L0X` (distance sensor), `PubSubClient` (optional), `OneWire` (optional), `DallasTemperature` (optional), `DHT sensor library` (optional).
 3. Board: **ESP32S3 Dev Module** (or Cardputer profile).
 4. Flash `nettemp_esp32.ino`.
 
@@ -78,6 +79,8 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 |------------|-------------|---------|-------------------------|
 | **BLE** | `{deviceId}-ble_{MAC}` | `nettemp_esp32-ble_A4C138ABCDEF` | `_temp`, `_hum`, `_batt` |
 | **I2C** | `{deviceId}-i2c_0x{ADDR}_{TYPE}` | `nettemp_esp32-i2c_0x76_bme280` | `_temp`, `_hum`, `_press` |
+| **I2C Light** | `{deviceId}-i2c_0x{ADDR}_tsl2561` | `nettemp_esp32-i2c_0x29_tsl2561` | `_lux` |
+| **I2C Distance** | `{deviceId}-i2c_0x{ADDR}_vl53l0x` | `nettemp_esp32-i2c_0x29_vl53l0x` | `_dist` |
 | **DS18B20** | `{deviceId}-ds_{FAMILY}_{SERIAL}` | `nettemp_esp32-ds_28_000003253425` | `_temp` |
 | **DHT** | `{deviceId}-dht{TYPE}_gpio{PIN}` | `nettemp_esp32-dht22_gpio16` | `_temp`, `_hum` |
 | **VBAT** | `{deviceId}-vbat` | `nettemp_esp32-vbat` | `_batt`, `_volt` |
@@ -89,8 +92,8 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 **Format Details:**
 
 - **BLE MAC**: 12 uppercase hex digits without colons (e.g., `A4C138ABCDEF`)
-- **I2C Address**: Lowercase hex with `0x` prefix (e.g., `0x76`)
-- **I2C Type**: Sensor type name (e.g., `bme280`, `tmp102`, `sht3x`)
+- **I2C Address**: Lowercase hex with `0x` prefix (e.g., `0x76`, `0x29`)
+- **I2C Type**: Sensor type name (e.g., `bmp180`, `bmp280`, `bme280`, `tmp102`, `sht3x`, `sht21`, `aht10`, `tsl2561`, `vl53l0x`)
 - **DS18B20 Serial**: Linux w1 format - family code + underscore + 12-char serial (lowercase hex)
 - **DHT Type**: `11` or `22`
 - **GPIO Pins**: Actual GPIO numbers used
@@ -105,9 +108,10 @@ The `deviceId` is configurable in settings (default: `nettemp_esp32`).
 - `_volt` - Voltage (V)
 - `_rssi` - Signal strength (dBm)
 - `_press` - Pressure (hPa)
+- `_lux` - Light intensity (lux) - TSL2561
+- `_dist` - Distance in centimeters - HC-SR04, VL53L0X
 - `_raw` - Raw ADC value (soil moisture)
 - `_pct` - Percentage value (soil moisture)
-- `_dist` - Distance in centimeters
 
 ### UI build selection
 - Cardputer UI auto-enables when Cardputer board is detected.
