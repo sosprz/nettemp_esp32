@@ -2,12 +2,11 @@
 
 #if NETTEMP_ENABLE_I2C
 
-#if __has_include(<Adafruit_VL53L0X.h>)
+// VL53L0X library - use Adafruit implementation
+// Note: __has_include doesn't work with arduino-cli auto-discovery,
+// so we include directly and let the build fail if library is missing
 #include <Adafruit_VL53L0X.h>
 #define NETTEMP_HAVE_VL53L0X 1
-#else
-#define NETTEMP_HAVE_VL53L0X 0
-#endif
 
 namespace {
 
@@ -76,16 +75,23 @@ bool vl53l0xDetect(TwoWire& wire, uint8_t addr) {
 
 bool vl53l0xReadDistanceMm(TwoWire& wire, uint8_t addr, float& outMm) {
 #if NETTEMP_HAVE_VL53L0X
+  // Adafruit VL53L0X implementation
   static Adafruit_VL53L0X* sensor = nullptr;
   static bool sensorReady = false;
   static uint8_t sensorAddr = 0;
   static TwoWire* sensorWire = nullptr;
   static uint32_t lastInitMs = 0;
+  static uint32_t lastSuccessMs = 0;
   const uint32_t nowMs = millis();
 
-  // Reinitialize if address/wire changed OR if init is stale (retry every 30s if failing)
+  // Reinitialize if:
+  // - First time (sensor == nullptr)
+  // - Address/wire changed
+  // - Init failed and 10s passed
+  // - No successful read in 60s (sensor might have reset)
   if (sensor == nullptr || sensorAddr != addr || sensorWire != &wire ||
-      (!sensorReady && (nowMs - lastInitMs > 30000))) {
+      (!sensorReady && (nowMs - lastInitMs > 10000)) ||
+      (sensorReady && lastSuccessMs > 0 && (nowMs - lastSuccessMs > 60000))) {
 
     // Clean up old sensor
     if (sensor != nullptr) {
@@ -100,12 +106,15 @@ bool vl53l0xReadDistanceMm(TwoWire& wire, uint8_t addr, float& outMm) {
     sensorWire = &wire;
     lastInitMs = nowMs;
 
-    // Try to initialize
+    // Try to initialize - use debug=false to avoid serial output
     if (sensor->begin(addr, false, &wire)) {
       sensorReady = true;
-      delay(50);  // Give sensor more time to stabilize
+      lastSuccessMs = nowMs;
+      delay(100);  // Give sensor time to stabilize
     } else {
-      // Init failed - will retry in 30s
+      // Init failed - will retry in 10s
+      delete sensor;
+      sensor = nullptr;
       return false;
     }
   }
@@ -116,27 +125,25 @@ bool vl53l0xReadDistanceMm(TwoWire& wire, uint8_t addr, float& outMm) {
   VL53L0X_RangingMeasurementData_t measure{};
   sensor->rangingTest(&measure, false);
 
-  // Accept almost any reading with data - VL53L0X is very permissive
-  // Status codes: 0=good, 1=sigma, 2=signal, 3=min range, 4=phase, 5+=other
+  // Accept readings based on status code
+  // Status: 0=good, 1=sigma fail, 2=signal fail, 3=min range, 4=phase fail
   if (measure.RangeMilliMeter < 8190) {
-    // Always accept status 0 (perfect measurement)
-    if (measure.RangeStatus == 0) {
+    // Accept status 0 (good measurement)
+    if (measure.RangeStatus == 0 && measure.RangeMilliMeter >= 0) {
       outMm = (float)measure.RangeMilliMeter;
+      lastSuccessMs = nowMs;
       return true;
     }
-    // Accept 1-4 with any non-zero value (degraded but usable)
-    if (measure.RangeStatus <= 4 && measure.RangeMilliMeter > 0) {
+    // Try accepting degraded but potentially usable readings
+    if (measure.RangeStatus >= 1 && measure.RangeStatus <= 2 && measure.RangeMilliMeter > 20) {
       outMm = (float)measure.RangeMilliMeter;
-      return true;
-    }
-    // Even accept zero distance for very close objects (status 0 or 3)
-    if ((measure.RangeStatus == 0 || measure.RangeStatus == 3) && measure.RangeMilliMeter == 0) {
-      outMm = 0.0f;
+      lastSuccessMs = nowMs;
       return true;
     }
   }
 
   return false;
+
 #else
   (void)wire;
   (void)addr;

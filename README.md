@@ -18,9 +18,10 @@ Arduino sketch for **any ESP32** as a Nettemp client (also works great with **M5
 
 ### Quick start (Arduino IDE)
 1. Install ESP32 boards support (Espressif).
-2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `Adafruit_VL53L0X` (distance sensor), `PubSubClient` (optional), `OneWire` (optional), `DallasTemperature` (optional), `DHT sensor library` (optional).
-3. Board: **ESP32S3 Dev Module** (or Cardputer profile).
-4. Flash `nettemp_esp32.ino`.
+2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `PubSubClient` (optional), `OneWire` (optional), `DallasTemperature` (optional), `DHT sensor library` (optional).
+3. **Optional VL53L0X distance sensor**: Install `Adafruit_VL53L0X` (recommended).
+4. Board: **ESP32S3 Dev Module** (or Cardputer profile).
+5. Flash `nettemp_esp32.ino`.
 
 If you see NimBLE compile errors, make sure you installed **NimBLE-Arduino** (not the built-in ESP32 BLE lib).
 
