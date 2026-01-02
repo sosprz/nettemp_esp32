@@ -1,3 +1,6 @@
+![Nettemp ESP32](img/img1.jpeg)
+![Nettemp ESP32](img/img2.png)
+
 ## Nettemp ESP32 (Cardputer): BLE thermometer viewer (Xiaomi LYWSD03MMC)
 
 Status: **Fully supported** on both standard ESP32 and M5Stack Cardputer ESP32-S3.
@@ -16,6 +19,36 @@ Arduino sketch for **any ESP32** as a Nettemp client (also works great with **M5
 - can send data to **MQTT**, **Nettemp Cloud API**, or **Webhook (JSON)**,
 - supports **OTA firmware upload** from the web UI.
 
+### ⚠️ Hardware Recommendations
+
+**ESP32-S3 is strongly recommended** over standard ESP32 due to memory constraints.
+
+**Why ESP32-S3?**
+- **512KB IRAM** vs standard ESP32's ~128KB
+- Enables **all features simultaneously** (BLE + I2C + MQTT + Server + OTA)
+- Standard ESP32 requires choosing **firmware variants** with limited feature sets
+
+**Memory Comparison:**
+
+| Chip | IRAM | Can Enable All Features? | Notes |
+|------|------|--------------------------|-------|
+| **ESP32** (D0WDQ6) | ~128KB | ❌ No | Requires feature-limited firmware variants |
+| **ESP32-S3** (WROOM-1) | ~512KB | ✅ Yes | Recommended - all features work |
+| **ESP32-C3** | ~400KB | ⚠️ Partial | More than ESP32, less than S3 |
+
+**Recommended Boards:**
+- **ESP32-S3-WROOM-1-N8R2** (8MB flash, 2MB PSRAM) - Best value ~$4-6
+- **ESP32-S3-WROOM-1-N16R8** (16MB flash, 8MB PSRAM) - Future-proof ~$6-8
+- **M5Stack Cardputer** - Premium option with display/keyboard
+
+**Standard ESP32 Limitations:**
+Due to limited IRAM (~128KB), standard ESP32 builds must disable some features:
+- Variant 1: BLE + Server + Webhook (no I2C, no MQTT)
+- Variant 2: BLE + I2C + MQTT (all features, tight on memory)
+- Variant 3: BLE + I2C + Webhook (no MQTT)
+
+See `make help` for available firmware variants.
+
 ### Quick start (Arduino IDE)
 1. Install ESP32 boards support (Espressif).
 2. Install libraries: `M5Cardputer`, `NimBLE-Arduino`, `Adafruit_GFX`, `Adafruit_SSD1306` (OLED), `PubSubClient` (optional), `OneWire` (optional), `DallasTemperature` (optional), `DHT sensor library` (optional).
@@ -30,10 +63,18 @@ If you see NimBLE compile errors, make sure you installed **NimBLE-Arduino** (no
 To build firmware `.bin` files for distribution or OTA updates:
 
 ```bash
-make all           # Build both versions
-make standard      # Build Standard ESP32 only
-make cardputer     # Build Cardputer ESP32-S3 only
-make clean         # Clean build artifacts
+make help                      # Show all available build targets
+make all                       # Build standard and cardputer
+make standard-all-variants     # Build all 3 standard ESP32 variants
+make cardputer                 # Build Cardputer ESP32-S3 only
+make clean                     # Clean build artifacts
+```
+
+**Standard ESP32 Firmware Variants** (all include Web + OTA):
+```bash
+make standard-ble-server       # BLE + Server + Webhook + GPIO
+make standard-ble-i2c-mqtt     # BLE + I2C + MQTT + GPIO (most features)
+make standard-ble-i2c-webhook  # BLE + I2C + Server + Webhook + GPIO
 ```
 
 **Requirements:**
@@ -47,9 +88,9 @@ make clean         # Clean build artifacts
 ```
 
 **Output:**
-- Firmware binaries are saved to `firmware/` directory
-- Standard build: `nettemp_esp32_standard_YYYYMMDD_HHMMSS.bin` (with OLED SSD1306 support)
-- Cardputer build: `nettemp_esp32_cardputer_YYYYMMDD_HHMMSS.bin` (OLED disabled, uses built-in ST7789 LCD)
+Firmware binaries are saved to `firmware/` directory:
+- Standard variants: `nettemp_esp32_standard_ble_*_YYYYMMDD_HHMMSS.bin` (feature-limited)
+- Cardputer: `nettemp_esp32_cardputer_YYYYMMDD_HHMMSS.bin` (all features enabled)
 
 **Flashing:**
 ```bash

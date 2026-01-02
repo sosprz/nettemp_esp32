@@ -302,9 +302,7 @@ static void configHandleSaveSensors() {
       const String prefKey = prefKeyBleName(macNo);
       g_prefs.putString(prefKey.c_str(), g_webServer.arg(nameKey));
     }
-    const bool selected = g_webServer.hasArg(selKey);
-    if (selected) bleManualSet(macNo, true);
-    else bleManualClear(macNo);
+    bleManualSet(macNo, g_webServer.hasArg(selKey));
   }
   g_prefs.end();
   prefsSave();
